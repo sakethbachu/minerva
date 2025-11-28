@@ -1,9 +1,9 @@
-import 'dotenv/config';
+import "dotenv/config";
 import express from "express";
-import { fileURLToPath } from 'url';
-import { dirname, join } from 'path';
-import { generateQuestions } from './services/questionGenerator.js';
-import { Question } from './types/question.types.js';
+import { fileURLToPath } from "url";
+import { dirname, join } from "path";
+import { generateQuestions } from "./services/questionGenerator.js";
+import { Question } from "./types/question.types.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -22,17 +22,17 @@ app.use((req, res, next) => {
 
 // Add CORS headers
 app.use((req, res, next) => {
-  res.header('Access-Control-Allow-Origin', '*');
-  res.header('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
-  res.header('Access-Control-Allow-Headers', 'Content-Type, Accept');
-  if (req.method === 'OPTIONS') {
+  res.header("Access-Control-Allow-Origin", "*");
+  res.header("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
+  res.header("Access-Control-Allow-Headers", "Content-Type, Accept");
+  if (req.method === "OPTIONS") {
     return res.sendStatus(200);
   }
   next();
 });
 
 // Serve static files from public directory
-app.use(express.static(join(__dirname, '../public')));
+app.use(express.static(join(__dirname, "../public")));
 
 // Health check endpoint
 app.get("/health", (req, res) => {
@@ -44,8 +44,8 @@ app.post("/api/questions", async (req, res) => {
   try {
     const { query } = req.body;
 
-    if (!query || typeof query !== 'string') {
-      return res.status(400).json({ error: 'Invalid query. Expected a string.' });
+    if (!query || typeof query !== "string") {
+      return res.status(400).json({ error: "Invalid query. Expected a string." });
     }
 
     const sessionId = generateSessionId();
@@ -59,7 +59,7 @@ app.post("/api/questions", async (req, res) => {
       currentQuestionIndex: 0,
       answers: {},
       originalQuery: query,
-      questions: questions
+      questions: questions,
     });
 
     console.log(`Session ${sessionId} created with ${questions.length} questions for "${query}"`);
@@ -67,14 +67,14 @@ app.post("/api/questions", async (req, res) => {
     res.json({
       success: true,
       sessionId: sessionId,
-      questions: questions
+      questions: questions,
     });
-  } catch (error: any) {
-    console.error('Error generating questions:', error);
-    const errorMessage = error?.message || 'Failed to generate questions';
-    res.status(500).json({ 
+  } catch (error: unknown) {
+    console.error("Error generating questions:", error);
+    const errorMessage = error instanceof Error ? error.message : "Failed to generate questions";
+    res.status(500).json({
       success: false,
-      error: errorMessage 
+      error: errorMessage,
     });
   }
 });
@@ -84,17 +84,17 @@ app.get("/api/widget/:sessionId", (req, res) => {
   const { sessionId } = req.params;
 
   if (!sessionId || !userSessions.has(sessionId)) {
-    return res.status(404).json({ error: 'Session not found' });
+    return res.status(404).json({ error: "Session not found" });
   }
 
   const session = userSessions.get(sessionId);
   if (!session) {
-    return res.status(404).json({ error: 'Session not found' });
+    return res.status(404).json({ error: "Session not found" });
   }
 
   const widgetHtml = generateQAWidget(sessionId);
-  
-  res.setHeader('Content-Type', 'text/html');
+
+  res.setHeader("Content-Type", "text/html");
   res.send(widgetHtml);
 });
 
@@ -104,18 +104,18 @@ app.post("/api/answers", (req, res) => {
     const { sessionId, answers } = req.body;
 
     if (!sessionId || !userSessions.has(sessionId)) {
-      return res.status(404).json({ error: 'Session not found' });
+      return res.status(404).json({ error: "Session not found" });
     }
 
-    if (!answers || typeof answers !== 'object') {
-      return res.status(400).json({ error: 'Invalid answers format' });
+    if (!answers || typeof answers !== "object") {
+      return res.status(400).json({ error: "Invalid answers format" });
     }
 
     const session = userSessions.get(sessionId)!;
 
     // Store answers in session
     Object.entries(answers).forEach(([question, answer]) => {
-      const questionId = session.questions.find(q => q.text === question)?.id;
+      const questionId = session.questions.find((q) => q.text === question)?.id;
       if (questionId) {
         session.answers[questionId] = answer as string;
       }
@@ -126,23 +126,23 @@ app.post("/api/answers", (req, res) => {
     // Generate recommendation summary
     const summary = Object.entries(answers)
       .map(([q, a]) => `- **${q}**: ${a}`)
-      .join('\n');
+      .join("\n");
 
     const recommendation = {
       sessionId: sessionId,
       originalQuery: session.originalQuery,
       answers: answers,
       summary: summary,
-      message: `Based on your preferences for "${session.originalQuery}", here are your selections:\n\n${summary}`
+      message: `Based on your preferences for "${session.originalQuery}", here are your selections:\n\n${summary}`,
     };
 
     res.json({
       success: true,
-      ...recommendation
+      ...recommendation,
     });
   } catch (error) {
-    console.error('Error processing answers:', error);
-    res.status(500).json({ error: 'Failed to process answers' });
+    console.error("Error processing answers:", error);
+    res.status(500).json({ error: "Failed to process answers" });
   }
 });
 
@@ -150,12 +150,12 @@ app.post("/submit-answers", async (req, res) => {
   try {
     const { sessionId, answers } = req.body;
 
-    if (!answers || typeof answers !== 'object') {
-      return res.status(400).json({ error: 'Invalid answers format' });
+    if (!answers || typeof answers !== "object") {
+      return res.status(400).json({ error: "Invalid answers format" });
     }
 
     if (!sessionId || !userSessions.has(sessionId)) {
-      return res.status(404).json({ error: 'Session not found' });
+      return res.status(404).json({ error: "Session not found" });
     }
 
     const session = userSessions.get(sessionId)!;
@@ -163,7 +163,7 @@ app.post("/submit-answers", async (req, res) => {
     // Store answers in session (answers now come with question IDs as keys)
     Object.entries(answers).forEach(([questionId, answer]) => {
       // Validate that questionId exists in session.questions
-      const questionExists = session.questions.find(q => q.id === questionId);
+      const questionExists = session.questions.find((q) => q.id === questionId);
       if (questionExists) {
         session.answers[questionId] = answer as string;
       } else {
@@ -175,53 +175,56 @@ app.post("/submit-answers", async (req, res) => {
 
     // Call Python search service with questions array
     try {
-      const searchResponse = await fetch('http://localhost:8000/api/search', {
-        method: 'POST',
+      const searchResponse = await fetch("http://localhost:8000/api/search", {
+        method: "POST",
         headers: {
-          'Content-Type': 'application/json',
+          "Content-Type": "application/json",
         },
         body: JSON.stringify({
           query: session.originalQuery,
-          answers: session.answers,  // {"q1": "Casual", "q2": "$50"}
-          questions: session.questions,  // Full question objects
-          user_id: null  // TODO: Add user authentication
-        })
+          answers: session.answers, // {"q1": "Casual", "q2": "$50"}
+          questions: session.questions, // Full question objects
+          user_id: null, // TODO: Add user authentication
+        }),
       });
 
-      const searchResult = await searchResponse.json() as {
+      const searchResult = (await searchResponse.json()) as {
         success: boolean;
         results?: Array<{ title: string; description?: string; url?: string; relevance?: number }>;
         error?: string;
       };
 
       if (!searchResponse.ok || !searchResult.success) {
-        console.error('Search service error:', searchResult.error);
+        console.error("Search service error:", searchResult.error);
         return res.status(500).json({
           success: false,
-          error: searchResult.error || 'Search service failed',
-          message: 'Failed to generate recommendations'
+          error: searchResult.error || "Search service failed",
+          message: "Failed to generate recommendations",
         });
       }
 
-      console.log(`Session ${sessionId} - Search completed, results:`, searchResult.results?.length || 0);
+      console.log(
+        `Session ${sessionId} - Search completed, results:`,
+        searchResult.results?.length || 0
+      );
 
       res.json({
         success: true,
-        message: 'Answers received and search completed!',
+        message: "Answers received and search completed!",
         sessionId: sessionId,
-        searchResults: searchResult.results || []
+        searchResults: searchResult.results || [],
       });
     } catch (searchError) {
-      console.error('Error calling search service:', searchError);
+      console.error("Error calling search service:", searchError);
       return res.status(500).json({
         success: false,
-        error: 'Failed to call search service',
-        message: 'Search service unavailable'
+        error: "Failed to call search service",
+        message: "Search service unavailable",
       });
     }
   } catch (error) {
-    console.error('Error processing answers:', error);
-    res.status(500).json({ error: 'Failed to process answers' });
+    console.error("Error processing answers:", error);
+    res.status(500).json({ error: "Failed to process answers" });
   }
 });
 
@@ -375,27 +378,33 @@ function generateQAWidget(sessionId: string): string {
       👋 Click on your preferred answer for each question. After answering all questions, click the "Submit Answers" button to send your preferences and get recommendations!
     </div>
     
-    ${questions.map((question, index) => {
-    const answers = question.answers.slice(0, NUM_ANSWERS);
-    return `
+    ${questions
+      .map((question, index) => {
+        const answers = question.answers.slice(0, NUM_ANSWERS);
+        return `
         <div class="question-block">
           <div class="question-title">
             <span class="question-number">${index + 1}</span>
             ${question.text}
           </div>
           <div class="answers-grid">
-            ${answers.map(answer => `
+            ${answers
+              .map(
+                (answer: string) => `
               <button 
                 class="answer-button" 
                 onclick="selectAnswer('${question.id}', '${answer}', this)"
               >
                 ${answer}
               </button>
-            `).join('')}
+            `
+              )
+              .join("")}
           </div>
         </div>
       `;
-  }).join('')}
+      })
+      .join("")}
     
     <button id="submitButton" class="submit-button" onclick="submitAnswers()">
       🚀 Submit Answers & Get Recommendations
@@ -458,7 +467,7 @@ function generateQAWidget(sessionId: string): string {
             // We're in an iframe, try to get parent's origin
             const parentOrigin = window.parent.location.origin;
             if (parentOrigin && parentOrigin.includes('localhost')) {
-              serverUrl = parentOrigin.replace(/:\d+$/, ':3001'); // Replace port with 3001
+              serverUrl = parentOrigin.replace(/:[0-9]+$/, ':3001'); // Replace port with 3001
             }
           }
         } catch (e) {
@@ -576,6 +585,5 @@ app.listen(PORT, () => {
   console.log(`Q&A Recommendation Agent Server is running on http://localhost:${PORT}`);
   console.log(`Web app: http://localhost:${PORT}`);
   console.log(`Configuration: ${NUM_QUESTIONS} questions, ${NUM_ANSWERS} answers per question`);
-  console.log('='.repeat(80));
+  console.log("=".repeat(80));
 });
-
