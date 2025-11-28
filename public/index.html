@@ -3,923 +3,110 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Q&A Agent - ChatGPT Style</title>
-  <style>
-    * {
-      margin: 0;
-      padding: 0;
-      box-sizing: border-box;
-    }
-
-    body {
-      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
-      background: #343541;
-      color: #ececf1;
-      height: 100vh;
-      display: flex;
-      flex-direction: column;
-      overflow: hidden;
-    }
-
-    .header {
-      background: #202123;
-      padding: 12px 16px;
-      border-bottom: 1px solid #4d4d4f;
-      display: flex;
-      align-items: center;
-      justify-content: space-between;
-    }
-
-    .header h1 {
-      font-size: 16px;
-      font-weight: 600;
-      color: #ececf1;
-    }
-
-    .header .status {
-      font-size: 12px;
-      color: #8e8ea0;
-      padding: 4px 8px;
-      background: #40414f;
-      border-radius: 4px;
-    }
-
-    .chat-container {
-      flex: 1;
-      overflow-y: auto;
-      padding: 20px;
-      display: flex;
-      flex-direction: column;
-      gap: 20px;
-    }
-
-    .message {
-      display: flex;
-      gap: 16px;
-      max-width: 768px;
-      margin: 0 auto;
-      width: 100%;
-    }
-
-    .message.user {
-      flex-direction: row-reverse;
-      justify-content: flex-end;
-      gap: 8px;
-      margin-left: auto;
-      margin-right: 0;
-    }
-    
-    .message.user .message-content {
-      max-width: 70%;
-      text-align: right;
-    }
-
-    .avatar {
-      width: 32px;
-      height: 32px;
-      border-radius: 4px;
-      flex-shrink: 0;
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      font-weight: 600;
-      font-size: 14px;
-    }
-
-    .avatar.user {
-      background: #5436da;
-      color: white;
-    }
-
-    .avatar.assistant {
-      background: #19c37d;
-      color: white;
-    }
-
-    .message-content {
-      flex: 1;
-      min-width: 0;
-    }
-
-    .message-text {
-      line-height: 1.75;
-      word-wrap: break-word;
-      white-space: pre-wrap;
-    }
-
-    .message.user .message-text {
-      color: #ececf1;
-    }
-
-    .message.assistant .message-text {
-      color: #d1d5db;
-    }
-
-    .tool-call {
-      background: #40414f;
-      border-radius: 8px;
-      padding: 12px;
-      margin-top: 8px;
-      font-size: 13px;
-      border: 1px solid #565869;
-    }
-
-    .tool-call-header {
-      display: flex;
-      align-items: center;
-      gap: 8px;
-      margin-bottom: 8px;
-      color: #8e8ea0;
-    }
-
-    .tool-call-icon {
-      width: 16px;
-      height: 16px;
-      background: #5436da;
-      border-radius: 2px;
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      color: white;
-      font-size: 10px;
-      font-weight: 600;
-    }
-
-    .widget-container {
-      margin-top: 16px;
-      background: white;
-      border-radius: 12px;
-      overflow: hidden;
-      box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
-    }
-
-    .widget-container iframe {
-      width: 100%;
-      border: none;
-      display: block;
-    }
-
-    .input-container {
-      background: #40414f;
-      border-top: 1px solid #565869;
-      padding: 12px;
-      display: flex;
-      align-items: center;
-      gap: 12px;
-    }
-
-    .input-wrapper {
-      flex: 1;
-      background: #40414f;
-      border: 1px solid #565869;
-      border-radius: 24px;
-      padding: 12px 16px;
-      display: flex;
-      align-items: center;
-      gap: 8px;
-      transition: border-color 0.2s;
-    }
-
-    .input-wrapper:focus-within {
-      border-color: #8e8ea0;
-    }
-
-    .input-wrapper input {
-      flex: 1;
-      background: transparent;
-      border: none;
-      color: #ececf1;
-      font-size: 16px;
-      outline: none;
-    }
-
-    .input-wrapper input::placeholder {
-      color: #8e8ea0;
-    }
-
-    .send-button {
-      width: 32px;
-      height: 32px;
-      border-radius: 6px;
-      background: #19c37d;
-      border: none;
-      color: white;
-      cursor: pointer;
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      transition: background 0.2s;
-      flex-shrink: 0;
-    }
-
-    .send-button:hover:not(:disabled) {
-      background: #16a085;
-    }
-
-    .send-button:disabled {
-      background: #565869;
-      cursor: not-allowed;
-      opacity: 0.5;
-    }
-
-    .loading {
-      display: inline-block;
-      width: 16px;
-      height: 16px;
-      border: 2px solid #565869;
-      border-top-color: #19c37d;
-      border-radius: 50%;
-      animation: spin 0.8s linear infinite;
-    }
-
-    @keyframes spin {
-      to { transform: rotate(360deg); }
-    }
-
-    .error {
-      color: #ef4444;
-      background: #7f1d1d;
-      padding: 12px;
-      border-radius: 8px;
-      margin-top: 8px;
-    }
-
-    .error-container {
-      display: flex;
-      flex-direction: column;
-      gap: 12px;
-    }
-
-    .retry-button {
-      background: #19c37d;
-      color: white;
-      border: none;
-      padding: 8px 16px;
-      border-radius: 6px;
-      cursor: pointer;
-      font-size: 14px;
-      font-weight: 500;
-      transition: background 0.2s;
-      align-self: flex-start;
-    }
-
-    .retry-button:hover {
-      background: #16a085;
-    }
-
-    .search-results {
-      margin-top: 16px;
-      background: #40414f;
-      border-radius: 8px;
-      padding: 16px;
-      border: 1px solid #565869;
-    }
-
-    .search-results-header {
-      font-size: 16px;
-      font-weight: 600;
-      color: #ececf1;
-      margin-bottom: 12px;
-      display: flex;
-      align-items: center;
-      gap: 8px;
-    }
-
-    .search-results-list {
-      display: flex;
-      flex-direction: column;
-      gap: 12px;
-    }
-
-    .search-result-item {
-      background: #343541;
-      border-radius: 8px;
-      padding: 16px;
-      border: 1px solid #565869;
-      transition: all 0.2s;
-      display: flex;
-      gap: 16px;
-      align-items: flex-start;
-    }
-
-    .search-result-item:hover {
-      border-color: #8e8ea0;
-      background: #3a3b4a;
-      transform: translateY(-2px);
-      box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3);
-    }
-
-    .search-result-image-container {
-      flex-shrink: 0;
-      width: 120px;
-      height: 120px;
-      border-radius: 8px;
-      overflow: hidden;
-      background: #202123;
-      border: 1px solid #565869;
-      display: flex;
-      align-items: center;
-      justify-content: center;
-    }
-
-    .search-result-image {
-      width: 100%;
-      height: 100%;
-      object-fit: cover;
-    }
-
-    .search-result-image-placeholder {
-      width: 100%;
-      height: 100%;
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      color: #8e8ea0;
-      font-size: 32px;
-      background: linear-gradient(135deg, #343541 0%, #40414f 100%);
-    }
-
-    .search-result-title {
-      font-size: 16px;
-      font-weight: 600;
-      color: #f4f4f5;
-      margin-bottom: 4px;
-      line-height: 1.4;
-    }
-
-    .search-result-domain {
-      font-size: 12px;
-      color: #9ca3af;
-    }
-
-    .search-result-description {
-      font-size: 13px;
-      color: #d1d5db;
-      line-height: 1.5;
-      margin-bottom: 4px;
-    }
-
-    .search-result-highlights {
-      margin: 8px 0 4px 16px;
-      padding: 0;
-      color: #d1d5db;
-      font-size: 13px;
-      line-height: 1.4;
-    }
-
-    .search-result-highlights li {
-      margin-bottom: 4px;
-    }
-
-    .search-result-section {
-      margin-top: 8px;
-      padding: 10px 12px;
-      background: #2f303d;
-      border-radius: 6px;
-      border: 1px solid #434455;
-    }
-
-    .search-result-section-title {
-      font-size: 11px;
-      text-transform: uppercase;
-      letter-spacing: 0.05em;
-      color: #9ca3af;
-      margin-bottom: 4px;
-    }
-
-    .search-result-section-body {
-      font-size: 13px;
-      color: #d1d5db;
-      line-height: 1.5;
-    }
-
-    .search-result-url {
-      font-size: 12px;
-      color: #8e8ea0;
-      word-break: break-all;
-    }
-
-    .search-result-relevance {
-      font-size: 11px;
-      color: #8e8ea0;
-      margin-left: auto;
-      padding: 2px 6px;
-      background: #565869;
-      border-radius: 4px;
-    }
-
-    .search-result-number {
-      display: inline-flex;
-      align-items: center;
-      justify-content: center;
-      width: 24px;
-      height: 24px;
-      background: #19c37d;
-      color: white;
-      border-radius: 50%;
-      font-size: 12px;
-      font-weight: 600;
-      margin-right: 12px;
-      flex-shrink: 0;
-    }
-
-    .search-result-header {
-      display: flex;
-      align-items: flex-start;
-      gap: 12px;
-      margin-bottom: 8px;
-    }
-
-    .search-result-content {
-      flex: 1;
-      min-width: 0;
-      display: flex;
-      flex-direction: column;
-      gap: 8px;
-    }
-
-    .search-result-buy-button {
-      display: inline-flex;
-      align-items: center;
-      gap: 6px;
-      background: #19c37d;
-      color: white;
-      padding: 10px 20px;
-      border-radius: 6px;
-      text-decoration: none;
-      font-weight: 600;
-      font-size: 14px;
-      margin-top: 8px;
-      transition: all 0.2s;
-      border: none;
-      cursor: pointer;
-      width: fit-content;
-    }
-
-    .search-result-buy-button:hover {
-      background: #16a085;
-      transform: translateY(-1px);
-      box-shadow: 0 4px 8px rgba(25, 195, 125, 0.3);
-    }
-
-    .search-result-buy-button::after {
-      content: " →";
-      font-size: 16px;
-    }
-
-    .search-result-url-link {
-      display: inline-flex;
-      align-items: center;
-      gap: 4px;
-      color: #19c37d;
-      text-decoration: none;
-      font-size: 12px;
-      margin-top: 6px;
-      transition: color 0.2s;
-    }
-
-    .search-result-url-link:hover {
-      color: #16a085;
-      text-decoration: underline;
-    }
-
-    .search-result-url-link::before {
-      content: "🔗 ";
-    }
-
-    .no-results {
-      text-align: center;
-      padding: 24px;
-      color: #8e8ea0;
-      font-size: 14px;
-    }
-
-    .search-loading {
-      display: flex;
-      align-items: center;
-      gap: 8px;
-      color: #8e8ea0;
-      font-size: 14px;
-      padding: 16px;
-    }
-
-    /* Scrollbar styling */
-    .chat-container::-webkit-scrollbar {
-      width: 8px;
-    }
-
-    .chat-container::-webkit-scrollbar-track {
-      background: #343541;
-    }
-
-    .chat-container::-webkit-scrollbar-thumb {
-      background: #565869;
-      border-radius: 4px;
-    }
-
-    .chat-container::-webkit-scrollbar-thumb:hover {
-      background: #6e6e80;
-    }
-  </style>
+  <title>Q&A Recommendation Agent</title>
+  <link rel="stylesheet" href="styles.css">
 </head>
 <body>
-  <div class="header">
-    <h1>🎯 Q&A Recommendation Agent</h1>
-    <div class="status" id="status">Ready</div>
-  </div>
+  <div class="app-container">
+    <!-- Hamburger Menu -->
+    <button class="menu-button" id="menuButton" aria-label="Menu">
+      <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+        <line x1="3" y1="6" x2="21" y2="6"></line>
+        <line x1="3" y1="12" x2="21" y2="12"></line>
+        <line x1="3" y1="18" x2="21" y2="18"></line>
+      </svg>
+    </button>
 
-  <div class="chat-container" id="chatContainer">
-    <div class="message assistant">
-      <div class="avatar assistant">AI</div>
-      <div class="message-content">
-        <div class="message-text">
-          👋 Hi! I'm your Q&A Recommendation Agent. Ask me to recommend something and I'll generate personalized questions for you!
-          <br><br>
-          Try asking: "I want shoes for work" or "Recommend me laptops for coding"
+    <!-- Menu Dropdown -->
+    <div class="menu-dropdown" id="menuDropdown">
+      <button class="menu-item" data-category="all">Home</button>
+      <button class="menu-item" data-category="electronics">Settings</button>
+      <button class="menu-item" data-category="clothing">Chats</button>
+    </div>
+
+    <!-- Main Content - Landing Page -->
+    <div class="main-content" id="mainContent">
+      <!-- Top: Greeting -->
+      <div class="greeting">
+        <h1>Hello, I'm your personal AI recommendation assistant</h1>
+      </div>
+
+      <!-- Spacer -->
+      <div class="spacer"></div>
+
+      <!-- Center: Typewriter and Prompt -->
+      <div class="center-content">
+        <div class="typewriter-container">
+          <span id="typewriterText" class="typewriter-text"></span>
+          <span class="cursor">|</span>
         </div>
+        <h2 class="prompt">Let's get Started</h2>
+      </div>
+
+      <!-- Spacer -->
+      <div class="spacer"></div>
+
+      <!-- Bottom: Input and Get Started -->
+      <div class="bottom-content">
+        <div class="input-wrapper">
+          <input 
+            type="text" 
+            id="queryInput" 
+            placeholder="Ask for recommendations... (e.g., 'I want running shoes for marathon training')" 
+            autocomplete="off"
+          >
+          <button class="get-started-btn" id="getStartedBtn">
+            <svg width="20" height="20" viewBox="0 0 20 20" fill="none">
+              <path d="M18 2L8 12M18 2L12 18L8 12M18 2L2 8L8 12" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+            </svg>
+          </button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Chat Interface (hidden initially) -->
+    <div class="chat-interface" id="chatInterface" style="display: none;">
+      <div class="chat-header">
+        <button class="back-button" id="backButton">
+          <svg width="20" height="20" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="2">
+            <path d="M12 4L6 10L12 16"/>
+          </svg>
+        </button>
+        <h2>Q&A Recommendation</h2>
+        <div class="status-badge" id="statusBadge">Ready</div>
+      </div>
+
+      <div class="chat-container" id="chatContainer">
+        <!-- Messages will be added here -->
+      </div>
+
+      <div class="chat-input-container">
+        <div class="chat-input-wrapper">
+          <input 
+            type="text" 
+            id="chatInput" 
+            placeholder="Ask anything..." 
+            autocomplete="off"
+          >
+          <button class="send-button" id="sendButton">
+            <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
+              <path d="M.5 1.163l1.5 1.5L8 8l-6 5.337-1.5 1.5L8 9l7.5 5.837-1.5-1.5L8 8l6-5.337 1.5-1.5L8 7 .5 1.163z" fill="currentColor"/>
+            </svg>
+          </button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Results Overlay -->
+    <div class="results-overlay" id="resultsOverlay">
+      <div class="results-content">
+        <button class="close-btn" id="closeBtn">&times;</button>
+        <h2>Search Results</h2>
+        <div class="result-display" id="resultDisplay"></div>
       </div>
     </div>
   </div>
 
-  <div class="input-container">
-    <div class="input-wrapper">
-      <input 
-        type="text" 
-        id="messageInput" 
-        placeholder="Ask anything..." 
-        autocomplete="off"
-      >
-      <button class="send-button" id="sendButton" onclick="sendMessage()">
-        <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
-          <path d="M.5 1.163l1.5 1.5L8 8l-6 5.337-1.5 1.5L8 9l7.5 5.837-1.5-1.5L8 8l6-5.337 1.5-1.5L8 7 .5 1.163z" fill="currentColor"/>
-        </svg>
-      </button>
-    </div>
-  </div>
-
-  <script>
-    const API_BASE = 'http://localhost:3001';
-    const chatContainer = document.getElementById('chatContainer');
-    const messageInput = document.getElementById('messageInput');
-    const sendButton = document.getElementById('sendButton');
-    const status = document.getElementById('status');
-    let currentSessionId = null;
-    let lastQuery = null; // Store last query for retry
-
-    function updateStatus(text, color = '#8e8ea0') {
-      status.textContent = text;
-      status.style.color = color;
-    }
-
-    function addMessage(text, isUser = false) {
-      const messageDiv = document.createElement('div');
-      messageDiv.className = `message ${isUser ? 'user' : 'assistant'}`;
-      messageDiv.innerHTML = `
-        <div class="avatar ${isUser ? 'user' : 'assistant'}">${isUser ? 'U' : 'AI'}</div>
-        <div class="message-content">
-          <div class="message-text">${text}</div>
-        </div>
-      `;
-      chatContainer.appendChild(messageDiv);
-      chatContainer.scrollTop = chatContainer.scrollHeight;
-      return messageDiv;
-    }
-
-    function addToolCall(toolName, query) {
-      const messageDiv = document.createElement('div');
-      messageDiv.className = 'message assistant';
-      messageDiv.innerHTML = `
-        <div class="avatar assistant">AI</div>
-        <div class="message-content">
-          <div class="tool-call">
-            <div class="tool-call-header">
-              <div class="tool-call-icon">H</div>
-              <span>${toolName}</span>
-            </div>
-            <div style="color: #ececf1; font-size: 12px; margin-top: 4px;">
-              Query: "${query}"
-            </div>
-          </div>
-        </div>
-      `;
-      chatContainer.appendChild(messageDiv);
-      chatContainer.scrollTop = chatContainer.scrollHeight;
-      return messageDiv;
-    }
-
-    function addWidget(html, sessionId) {
-      const messageDiv = document.createElement('div');
-      messageDiv.className = 'message assistant';
-      messageDiv.innerHTML = `
-        <div class="avatar assistant">AI</div>
-        <div class="message-content">
-          <div class="widget-container" id="widget-${sessionId}"></div>
-        </div>
-      `;
-      chatContainer.appendChild(messageDiv);
-      
-      // Create blob URL and display in iframe
-      const blob = new Blob([html], { type: 'text/html' });
-      const url = URL.createObjectURL(blob);
-      const widgetDiv = messageDiv.querySelector(`#widget-${sessionId}`);
-      widgetDiv.innerHTML = `<iframe src="${url}" style="width: 100%; border: none; min-height: 400px;"></iframe>`;
-      
-      chatContainer.scrollTop = chatContainer.scrollHeight;
-      return messageDiv;
-    }
-
-    function addError(message, showRetry = false) {
-      const messageDiv = document.createElement('div');
-      messageDiv.className = 'message assistant';
-      
-      let errorContent = `
-        <div class="error-container">
-          <div class="error">❌ ${message}</div>
-      `;
-      
-      if (showRetry && lastQuery) {
-        errorContent += `
-          <button class="retry-button" onclick="retryLastQuery()">🔄 Retry</button>
-        `;
-      }
-      
-      errorContent += `</div>`;
-      
-      messageDiv.innerHTML = `
-        <div class="avatar assistant">AI</div>
-        <div class="message-content">
-          ${errorContent}
-        </div>
-      `;
-      chatContainer.appendChild(messageDiv);
-      chatContainer.scrollTop = chatContainer.scrollHeight;
-    }
-
-    function addSearchResults(searchResults, error = null) {
-      const messageDiv = document.createElement('div');
-      messageDiv.className = 'message assistant';
-      
-      let resultsContent = '';
-      
-      if (error) {
-        resultsContent = `
-          <div class="search-results">
-            <div class="error">❌ Search failed: ${error}</div>
-          </div>
-        `;
-      } else if (!searchResults || searchResults.length === 0) {
-        resultsContent = `
-          <div class="search-results">
-            <div class="no-results">
-              🔍 No results found. Try refining your query or answers.
-            </div>
-          </div>
-        `;
-      } else {
-        const resultsList = searchResults.map((result, index) => {
-          const title = result.title || 'Untitled';
-          const description = result.description || 'No description available';
-          const url = result.url || '';
-          const relevance = result.relevance ? `${Math.round(result.relevance * 100)}%` : '';
-          const whyMatches = result.why_matches || '';
-          const additionalInfo = result.additional_info || '';
-          const highlights = Array.isArray(result.highlights) ? result.highlights : null;
-
-          // Escape HTML to prevent XSS
-          const escapeHtml = (text) => {
-            const div = document.createElement('div');
-            div.textContent = text;
-            return div.innerHTML;
-          };
-
-          let hostname = '';
-          try {
-            if (url) {
-              hostname = new URL(url).hostname.replace('www.', '');
-            }
-          } catch (e) {
-            hostname = '';
-          }
-
-          const safeTitle = escapeHtml(title || hostname || 'Product recommendation');
-          const safeDescription = escapeHtml(description);
-          const safeWhy = escapeHtml(whyMatches);
-          const safeAdditional = escapeHtml(additionalInfo);
-          const safeDomain = hostname ? escapeHtml(hostname) : '';
-          const imageUrl = result.image_url || '';
-          const safeImageUrl = escapeHtml(imageUrl);
-          const buyButtonLabel = hostname ? `Buy on ${hostname}` : 'View product';
-          const safeBuyLabel = escapeHtml(buyButtonLabel);
-
-          return `
-            <div class="search-result-item">
-              <div class="search-result-image-container">
-                ${safeImageUrl ? 
-                  `<img src="${safeImageUrl}" alt="${safeTitle}" class="search-result-image" onerror="this.parentElement.innerHTML='<div class=\\'search-result-image-placeholder\\'>🛍️</div>'">` :
-                  `<div class="search-result-image-placeholder">🛍️</div>`
-                }
-              </div>
-              <div class="search-result-content">
-                <div class="search-result-header">
-                  <div class="search-result-number">${index + 1}</div>
-                  <div style="flex: 1;">
-                    <div class="search-result-title">${safeTitle}</div>
-                    ${safeDomain ? `<div class="search-result-domain">${safeDomain}</div>` : ''}
-                  </div>
-                  ${relevance ? `<span class="search-result-relevance">${relevance}</span>` : ''}
-                </div>
-                ${safeDescription ? `<div class="search-result-description">${safeDescription}</div>` : ''}
-                ${highlights && highlights.length ? `
-                  <ul class="search-result-highlights">
-                    ${highlights.slice(0, 5).map(item => `<li>${escapeHtml(item)}</li>`).join('')}
-                  </ul>
-                ` : ''}
-                ${safeWhy ? `
-                  <div class="search-result-section">
-                    <div class="search-result-section-title">Why it matches</div>
-                    <div class="search-result-section-body">${safeWhy}</div>
-                  </div>
-                ` : ''}
-                ${safeAdditional ? `
-                  <div class="search-result-section">
-                    <div class="search-result-section-title">Additional info</div>
-                    <div class="search-result-section-body">${safeAdditional}</div>
-                  </div>
-                ` : ''}
-                ${url ? `
-                  <a href="${url}" target="_blank" rel="noopener noreferrer" class="search-result-buy-button">
-                    🛒 ${safeBuyLabel}
-                  </a>
-                  <div style="margin-top: 4px; font-size: 11px; color: #8e8ea0;">
-                    <a href="${url}" target="_blank" rel="noopener noreferrer" style="color: #8e8ea0; text-decoration: none; word-break: break-all;">
-                      ${url}
-                    </a>
-                  </div>
-                ` : `
-                  <div style="margin-top: 8px; padding: 8px; background: #40414f; border-radius: 4px; font-size: 12px; color: #8e8ea0;">
-                    ⚠️ Product link not available. Try searching for "${safeTitle}" on Amazon or other retailers.
-                  </div>
-                `}
-              </div>
-            </div>
-          `;
-        }).join('');
-        
-        resultsContent = `
-          <div class="search-results">
-            <div class="search-results-header">
-              🔍 Search Results (${searchResults.length})
-            </div>
-            <div class="search-results-list">
-              ${resultsList}
-            </div>
-          </div>
-        `;
-      }
-      
-      messageDiv.innerHTML = `
-        <div class="avatar assistant">AI</div>
-        <div class="message-content">
-          ${resultsContent}
-        </div>
-      `;
-      chatContainer.appendChild(messageDiv);
-      chatContainer.scrollTop = chatContainer.scrollHeight;
-      return messageDiv;
-    }
-
-    async function sendMessage(queryToSend = null) {
-      const query = queryToSend || messageInput.value.trim();
-      if (!query) return;
-
-      // Store query for potential retry
-      lastQuery = query;
-
-      // Disable input
-      messageInput.disabled = true;
-      sendButton.disabled = true;
-      updateStatus('Generating questions...', '#19c37d');
-
-      // Add user message (only if not a retry)
-      if (!queryToSend) {
-        addMessage(query, true);
-        messageInput.value = '';
-      }
-
-      try {
-        // Call REST API to generate questions
-        const response = await fetch(`${API_BASE}/api/questions`, {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-          },
-          body: JSON.stringify({ query })
-        });
-
-        if (!response.ok) {
-          const errorData = await response.json().catch(() => ({}));
-          throw new Error(errorData.error || `HTTP ${response.status}: ${response.statusText}`);
-        }
-
-        const data = await response.json();
-        
-        if (data.success && data.sessionId) {
-          currentSessionId = data.sessionId;
-          
-          // Fetch and display widget
-          await fetchAndDisplayWidget(data.sessionId);
-          
-          updateStatus('Ready', '#8e8ea0');
-        } else {
-          throw new Error(data.error || 'Failed to generate questions');
-        }
-      } catch (error) {
-        console.error('Error:', error);
-        addError(`Question generation failed: ${error.message}`, true);
-        updateStatus('Error', '#ef4444');
-      } finally {
-        // Re-enable input
-        messageInput.disabled = false;
-        sendButton.disabled = false;
-        messageInput.focus();
-      }
-    }
-
-    function retryLastQuery() {
-      if (lastQuery) {
-        // Remove the error message before retrying
-        const errorMessages = chatContainer.querySelectorAll('.error-container');
-        if (errorMessages.length > 0) {
-          errorMessages[errorMessages.length - 1].closest('.message').remove();
-        }
-        sendMessage(lastQuery);
-      }
-    }
-
-    async function fetchAndDisplayWidget(sessionId) {
-      try {
-        updateStatus('Fetching widget...', '#19c37d');
-        
-        const response = await fetch(`${API_BASE}/api/widget/${sessionId}`);
-
-        if (!response.ok) {
-          throw new Error(`HTTP ${response.status}`);
-        }
-
-        const widgetHtml = await response.text();
-        addWidget(widgetHtml, sessionId);
-        updateStatus('Ready', '#8e8ea0');
-      } catch (error) {
-        console.error('Error fetching widget:', error);
-        addError(`Failed to load widget: ${error.message}`);
-      }
-    }
-
-    // Listen for answers submitted from widget iframe
-    window.addEventListener('message', (event) => {
-      if (event.data && event.data.type === 'answers-submitted') {
-        const { sessionId, answers, result } = event.data;
-        
-        console.log('Answers submitted:', { sessionId, answers, result });
-        
-        // Update status
-        updateStatus('Searching...', '#19c37d');
-        
-        // Check if search was successful
-        if (result && result.success) {
-          // Display search results
-          const searchResults = result.searchResults || [];
-          const error = result.error;
-          
-          addSearchResults(searchResults, error);
-          
-          updateStatus('Search completed', '#19c37d');
-          setTimeout(() => {
-            updateStatus('Ready', '#8e8ea0');
-          }, 2000);
-        } else {
-          // Display error
-          const errorMessage = result?.error || result?.message || 'Search failed';
-          addSearchResults(null, errorMessage);
-          
-          updateStatus('Search failed', '#ef4444');
-          setTimeout(() => {
-            updateStatus('Ready', '#8e8ea0');
-          }, 2000);
-        }
-      }
-    });
-
-    // Enter key to send
-    messageInput.addEventListener('keypress', (e) => {
-      if (e.key === 'Enter' && !e.shiftKey) {
-        e.preventDefault();
-        sendMessage();
-      }
-    });
-
-    // Focus input on load
-    messageInput.focus();
-  </script>
+  <script src="app.js"></script>
 </body>
 </html>
