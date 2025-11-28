@@ -2,11 +2,16 @@
 fastapi==0.109.0
 uvicorn[standard]==0.27.0
 
-# OpenAI API client
+# LLM clients
 openai>=2.8.0
+groq>=0.5.0
+google-generativeai>=0.7.2
+
+# Search providers
+tavily-python>=0.7.0
 
 # Validation and data models
-pydantic==2.5.3
+pydantic==2.9.2
 
 # Environment variable management
 python-dotenv==1.0.0
@@ -14,3 +19,6 @@ python-dotenv==1.0.0
 # E2B sandbox for code execution
 e2b>=0.1.0
 
+# Development tools
+ruff>=0.1.0
+mypy>=1.0.0

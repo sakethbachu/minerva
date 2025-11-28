@@ -1,0 +1,94 @@
+#!/bin/bash
+# Pre-commit hook to run ruff and mypy checks
+
+set -e
+
+# Colors for output
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+NC='\033[0m' # No Color
+
+echo -e "${GREEN}Running pre-commit checks...${NC}"
+
+# Get the repository root
+REPO_ROOT="$(git rev-parse --show-toplevel)"
+PYTHON_SERVICE="${REPO_ROOT}/python-service"
+
+# Check if python-service exists
+if [ ! -d "$PYTHON_SERVICE" ]; then
+    echo -e "${YELLOW}Warning: python-service directory not found, skipping checks${NC}"
+    exit 0
+fi
+
+# Find Python files that are staged for commit (relative to repo root)
+STAGED_FILES_RAW=$(git diff --cached --name-only --diff-filter=ACM | grep '\.py$' || true)
+
+if [ -z "$STAGED_FILES_RAW" ]; then
+    echo -e "${GREEN}No Python files staged for commit, skipping checks${NC}"
+    exit 0
+fi
+
+# Filter to only files in python-service and strip the python-service/ prefix
+STAGED_FILES=""
+for file in $STAGED_FILES_RAW; do
+    if [[ "$file" == python-service/* ]]; then
+        # Remove python-service/ prefix for paths relative to python-service directory
+        STAGED_FILES="$STAGED_FILES ${file#python-service/}"
+    fi
+done
+
+# Trim leading space
+STAGED_FILES=$(echo "$STAGED_FILES" | sed 's/^ *//')
+
+if [ -z "$STAGED_FILES" ]; then
+    echo -e "${GREEN}No Python files in python-service staged for commit, skipping checks${NC}"
+    exit 0
+fi
+
+cd "$PYTHON_SERVICE"
+
+echo -e "${GREEN}Checking staged Python files...${NC}"
+
+# Add Python user bin to PATH (for systems where pip installs to user directory)
+export PATH="${HOME}/Library/Python/3.9/bin:${PATH}"
+
+# Use python3 -m for better reliability (works even if not in PATH)
+PYTHON_CMD="python3"
+
+# Auto-fix ruff issues first (including unsafe fixes for type annotations)
+echo -e "\n${YELLOW}Auto-fixing ruff issues...${NC}"
+$PYTHON_CMD -m ruff check --fix --unsafe-fixes $STAGED_FILES || true
+
+# Auto-format files
+echo -e "\n${YELLOW}Auto-formatting files...${NC}"
+$PYTHON_CMD -m ruff format $STAGED_FILES || true
+
+# Re-stage the fixed files (they may have been modified)
+# Need to use full paths from repo root for git add
+cd "$REPO_ROOT"
+for file in $STAGED_FILES_RAW; do
+    if [[ "$file" == python-service/* ]] && [ -f "$file" ]; then
+        git add "$file" 2>/dev/null || true
+    fi
+done
+cd "$PYTHON_SERVICE"
+
+# Now run checks to see if there are any remaining issues
+echo -e "\n${YELLOW}Running ruff check (after auto-fix)...${NC}"
+if ! $PYTHON_CMD -m ruff check $STAGED_FILES; then
+    echo -e "${RED}❌ Ruff check failed. Some issues could not be auto-fixed.${NC}"
+    echo -e "${YELLOW}Please review and fix the remaining errors above.${NC}"
+    exit 1
+fi
+
+# Run mypy
+echo -e "\n${YELLOW}Running mypy type checking...${NC}"
+if ! $PYTHON_CMD -m mypy $STAGED_FILES --ignore-missing-imports --no-strict-optional; then
+    echo -e "${RED}❌ Mypy type checking failed. Please fix the type errors above.${NC}"
+    exit 1
+fi
+
+echo -e "\n${GREEN}✅ All checks passed!${NC}"
+exit 0
+
