@@ -197,7 +197,12 @@ function updateStatus(text, type = 'default') {
   const statusBadge = document.getElementById('statusBadge');
   if (!statusBadge) return;
   
-  statusBadge.textContent = text;
+  // For loading state, show just hourglass icon
+  if (type === 'loading') {
+    statusBadge.innerHTML = '<span class="hourglass-icon">⏳</span>';
+  } else {
+    statusBadge.textContent = text;
+  }
   statusBadge.className = `status-badge ${type}`;
 }
 
