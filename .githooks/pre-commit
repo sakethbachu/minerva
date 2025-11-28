@@ -1,0 +1,263 @@
+#!/bin/bash
+# Pre-commit hook to run ruff/mypy (Python) and ESLint/Prettier/tsc (TypeScript) checks
+
+set -e
+
+# Colors for output
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+NC='\033[0m' # No Color
+
+echo -e "${GREEN}Running pre-commit checks...${NC}"
+
+# Get the repository root
+REPO_ROOT="$(git rev-parse --show-toplevel)"
+PYTHON_SERVICE="${REPO_ROOT}/python-service"
+
+# Find Python files that are staged for commit (relative to repo root)
+STAGED_PYTHON_FILES_RAW=$(git diff --cached --name-only --diff-filter=ACM | grep '\.py$' || true)
+
+# Find TypeScript files that are staged for commit (relative to repo root)
+STAGED_TS_FILES_RAW=$(git diff --cached --name-only --diff-filter=ACM | grep -E '\.(ts|tsx)$' || true)
+
+# Check if we have any files to check
+if [ -z "$STAGED_PYTHON_FILES_RAW" ] && [ -z "$STAGED_TS_FILES_RAW" ]; then
+    echo -e "${GREEN}No Python or TypeScript files staged for commit, skipping checks${NC}"
+    exit 0
+fi
+
+# Track if we need to check Python files
+HAS_PYTHON_FILES=false
+HAS_TS_FILES=false
+
+# Process Python files
+if [ -n "$STAGED_PYTHON_FILES_RAW" ]; then
+    # Check if python-service exists
+    if [ ! -d "$PYTHON_SERVICE" ]; then
+        echo -e "${YELLOW}Warning: python-service directory not found, skipping Python checks${NC}"
+    else
+        # Filter to only files in python-service and strip the python-service/ prefix
+        STAGED_PYTHON_FILES=""
+        for file in $STAGED_PYTHON_FILES_RAW; do
+            if [[ "$file" == python-service/* ]]; then
+                # Remove python-service/ prefix for paths relative to python-service directory
+                STAGED_PYTHON_FILES="$STAGED_PYTHON_FILES ${file#python-service/}"
+            fi
+        done
+
+        # Trim leading space
+        STAGED_PYTHON_FILES=$(echo "$STAGED_PYTHON_FILES" | sed 's/^ *//')
+
+        if [ -n "$STAGED_PYTHON_FILES" ]; then
+            HAS_PYTHON_FILES=true
+        fi
+    fi
+fi
+
+# Process TypeScript files
+if [ -n "$STAGED_TS_FILES_RAW" ]; then
+    # Filter to only files in src directory
+    STAGED_TS_FILES=""
+    for file in $STAGED_TS_FILES_RAW; do
+        if [[ "$file" == src/* ]]; then
+            STAGED_TS_FILES="$STAGED_TS_FILES $file"
+        fi
+    done
+
+    # Trim leading space
+    STAGED_TS_FILES=$(echo "$STAGED_TS_FILES" | sed 's/^ *//')
+
+    if [ -n "$STAGED_TS_FILES" ]; then
+        HAS_TS_FILES=true
+    fi
+fi
+
+# Exit early if no files to check
+if [ "$HAS_PYTHON_FILES" = false ] && [ "$HAS_TS_FILES" = false ]; then
+    echo -e "${GREEN}No Python or TypeScript files in expected directories staged for commit, skipping checks${NC}"
+    exit 0
+fi
+
+# ============================================================================
+# AUTO-FIX PHASE (Sequential to avoid file conflicts)
+# ============================================================================
+
+# Python auto-fix
+if [ "$HAS_PYTHON_FILES" = true ]; then
+    cd "$PYTHON_SERVICE"
+    echo -e "${GREEN}Auto-fixing Python files...${NC}"
+
+    # Add Python user bin to PATH (for systems where pip installs to user directory)
+    export PATH="${HOME}/Library/Python/3.9/bin:${PATH}"
+
+    # Use python3 -m for better reliability (works even if not in PATH)
+    PYTHON_CMD="python3"
+
+    # Auto-fix ruff issues first (including unsafe fixes for type annotations)
+    echo -e "${YELLOW}Auto-fixing ruff issues...${NC}"
+    $PYTHON_CMD -m ruff check --fix --unsafe-fixes $STAGED_PYTHON_FILES || true
+
+    # Auto-format files
+    echo -e "${YELLOW}Auto-formatting Python files...${NC}"
+    $PYTHON_CMD -m ruff format $STAGED_PYTHON_FILES || true
+
+    # Re-stage the fixed files (they may have been modified)
+    cd "$REPO_ROOT"
+    for file in $STAGED_PYTHON_FILES_RAW; do
+        if [[ "$file" == python-service/* ]] && [ -f "$file" ]; then
+            git add "$file" 2>/dev/null || true
+        fi
+    done
+fi
+
+# TypeScript auto-fix
+if [ "$HAS_TS_FILES" = true ]; then
+    cd "$REPO_ROOT"
+    echo -e "${GREEN}Auto-fixing TypeScript files...${NC}"
+
+    # Check if node_modules exists (dependencies installed)
+    if [ ! -d "node_modules" ]; then
+        echo -e "${YELLOW}Warning: node_modules not found. Run 'npm install' first.${NC}"
+    else
+        # Auto-fix ESLint issues
+        echo -e "${YELLOW}Auto-fixing ESLint issues...${NC}"
+        npx eslint --fix $STAGED_TS_FILES || true
+
+        # Auto-format with Prettier
+        echo -e "${YELLOW}Auto-formatting TypeScript files...${NC}"
+        npx prettier --write $STAGED_TS_FILES || true
+
+        # Re-stage the fixed files (they may have been modified)
+        for file in $STAGED_TS_FILES_RAW; do
+            if [[ "$file" == src/* ]] && [ -f "$file" ]; then
+                git add "$file" 2>/dev/null || true
+            fi
+        done
+    fi
+fi
+
+# ============================================================================
+# FINAL CHECK PHASE (Parallel execution)
+# ============================================================================
+
+cd "$REPO_ROOT"
+
+# Create temporary files to capture exit codes
+PYTHON_CHECK_RESULT=$(mktemp)
+TS_CHECK_RESULT=$(mktemp)
+
+# Function to run Python checks
+run_python_checks() {
+    cd "$PYTHON_SERVICE"
+    export PATH="${HOME}/Library/Python/3.9/bin:${PATH}"
+    PYTHON_CMD="python3"
+    
+    echo -e "\n${YELLOW}Running Python checks...${NC}"
+    
+    # Run ruff check
+    echo -e "${YELLOW}Running ruff check (after auto-fix)...${NC}"
+    if ! $PYTHON_CMD -m ruff check $STAGED_PYTHON_FILES; then
+        echo -e "${RED}❌ Ruff check failed. Some issues could not be auto-fixed.${NC}"
+        echo -e "${YELLOW}Please review and fix the remaining errors above.${NC}"
+        echo "1" > "$PYTHON_CHECK_RESULT"
+        return 1
+    fi
+    
+    # Run mypy
+    echo -e "${YELLOW}Running mypy type checking...${NC}"
+    if ! $PYTHON_CMD -m mypy $STAGED_PYTHON_FILES --ignore-missing-imports --no-strict-optional; then
+        echo -e "${RED}❌ Mypy type checking failed. Please fix the type errors above.${NC}"
+        echo "1" > "$PYTHON_CHECK_RESULT"
+        return 1
+    fi
+    
+    echo "0" > "$PYTHON_CHECK_RESULT"
+    return 0
+}
+
+# Function to run TypeScript checks
+run_ts_checks() {
+    cd "$REPO_ROOT"
+    
+    echo -e "\n${YELLOW}Running TypeScript checks...${NC}"
+    
+    # Check if node_modules exists
+    if [ ! -d "node_modules" ]; then
+        echo -e "${RED}❌ node_modules not found. Run 'npm install' first.${NC}"
+        echo "1" > "$TS_CHECK_RESULT"
+        return 1
+    fi
+    
+    # Run ESLint check
+    echo -e "${YELLOW}Running ESLint check (after auto-fix)...${NC}"
+    if ! npx eslint $STAGED_TS_FILES; then
+        echo -e "${RED}❌ ESLint check failed. Some issues could not be auto-fixed.${NC}"
+        echo -e "${YELLOW}Please review and fix the remaining errors above.${NC}"
+        echo "1" > "$TS_CHECK_RESULT"
+        return 1
+    fi
+    
+    # Run TypeScript type check
+    # Note: tsc checks the entire project (necessary for type safety due to interdependencies)
+    # but we only run it when TypeScript files are staged
+    echo -e "${YELLOW}Running TypeScript type checking...${NC}"
+    if ! npx tsc --noEmit; then
+        echo -e "${RED}❌ TypeScript type checking failed. Please fix the type errors above.${NC}"
+        echo "1" > "$TS_CHECK_RESULT"
+        return 1
+    fi
+    
+    echo "0" > "$TS_CHECK_RESULT"
+    return 0
+}
+
+# Run checks in parallel
+if [ "$HAS_PYTHON_FILES" = true ] && [ "$HAS_TS_FILES" = true ]; then
+    # Both need to run - run in parallel
+    run_python_checks &
+    PYTHON_PID=$!
+    run_ts_checks &
+    TS_PID=$!
+    
+    # Wait for both to complete (disable set -e temporarily to handle errors properly)
+    set +e
+    wait $PYTHON_PID
+    PYTHON_WAIT_EXIT=$?
+    wait $TS_PID
+    TS_WAIT_EXIT=$?
+    set -e
+elif [ "$HAS_PYTHON_FILES" = true ]; then
+    # Only Python
+    run_python_checks
+elif [ "$HAS_TS_FILES" = true ]; then
+    # Only TypeScript
+    run_ts_checks
+fi
+
+# Check results
+PYTHON_EXIT=0
+TS_EXIT=0
+
+if [ "$HAS_PYTHON_FILES" = true ]; then
+    if [ -f "$PYTHON_CHECK_RESULT" ]; then
+        PYTHON_EXIT=$(cat "$PYTHON_CHECK_RESULT")
+    fi
+fi
+
+if [ "$HAS_TS_FILES" = true ]; then
+    if [ -f "$TS_CHECK_RESULT" ]; then
+        TS_EXIT=$(cat "$TS_CHECK_RESULT")
+    fi
+fi
+
+# Clean up temp files
+rm -f "$PYTHON_CHECK_RESULT" "$TS_CHECK_RESULT"
+
+# Exit with error if any check failed
+if [ "$PYTHON_EXIT" != "0" ] || [ "$TS_EXIT" != "0" ]; then
+    exit 1
+fi
+
+echo -e "\n${GREEN}✅ All checks passed!${NC}"
+exit 0
