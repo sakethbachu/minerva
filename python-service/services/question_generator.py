@@ -4,6 +4,7 @@ Handles Gemini API calls, Pydantic validation, and retry with exponential backof
 """
 
 import json
+import logging
 import os
 import re
 import time
@@ -15,7 +16,10 @@ from models.question import Question, QuestionsResponse
 from question_utils.question_helpers import (
     get_question_system_prompt,
     get_question_user_prompt,
+    remove_markdown_code_blocks,
 )
+
+logger = logging.getLogger(__name__)
 
 MAX_RETRIES = 4
 
@@ -84,19 +88,14 @@ def call_gemini_with_validation(
             raise ValueError("Empty response from Gemini")
 
         # Parse JSON - Gemini may return markdown code blocks, so try to extract JSON
-        content = content.strip()
-
         # Log the raw content for debugging (first 500 chars)
-        print(f"Raw Gemini response (first 500 chars): {content[:500]}")
+        logger.debug(
+            '{"event": "gemini_raw_response", "snippet": "%s"}',
+            content[:500].replace('"', '\\"'),
+        )
 
         # Remove markdown code blocks if present
-        if content.startswith("```json"):
-            content = content[7:]  # Remove ```json
-        elif content.startswith("```"):
-            content = content[3:]  # Remove ```
-        if content.endswith("```"):
-            content = content[:-3]  # Remove closing ```
-        content = content.strip()
+        content = remove_markdown_code_blocks(content)
 
         # Try to extract JSON using regex if direct parsing fails
         # Look for JSON object pattern: { ... }
@@ -109,9 +108,14 @@ def call_gemini_with_validation(
             parsed = json.loads(content)
         except json.JSONDecodeError as json_error:
             # Log the problematic content for debugging
-            print(f"JSON parsing failed. Content length: {len(content)}")
-            print(
-                f"Content around error position: {content[max(0, json_error.pos - 50) : json_error.pos + 50]}"
+            logger.error(
+                '{"event": "gemini_json_parse_failed", "content_length": %d, "error": "%s"}',
+                len(content),
+                str(json_error).replace('"', '\\"'),
+            )
+            logger.debug(
+                '{"event": "gemini_json_parse_context", "context": "%s"}',
+                content[max(0, json_error.pos - 50) : json_error.pos + 50].replace('"', '\\"'),
             )
             raise
 
@@ -159,26 +163,49 @@ def generate_questions_with_retry(
     for attempt in range(1, MAX_RETRIES + 1):
         try:
             questions = call_gemini_with_validation(user_query, num_questions, num_answers)
+            logger.info(
+                '{"event": "questions_generated", "num_questions": %d, "num_answers": %d}',
+                len(questions),
+                num_answers,
+            )
             return questions
 
         except ValueError as e:
             # Validation error - don't retry, raise immediately
-            print(f"Validation error (attempt {attempt}/{MAX_RETRIES}): {e}")
+            logger.warning(
+                '{"event": "question_validation_error", "attempt": %d, "max_retries": %d, "error": "%s"}',
+                attempt,
+                MAX_RETRIES,
+                str(e).replace('"', '\\"'),
+            )
             raise ValueError(f"Question generation failed: {e}") from e
 
         except Exception as e:
             last_error = e
-            print(f"Attempt {attempt}/{MAX_RETRIES} failed: {e}")
+            logger.error(
+                '{"event": "question_generation_attempt_failed", "attempt": %d, "max_retries": %d, "error": "%s"}',
+                attempt,
+                MAX_RETRIES,
+                str(e).replace('"', '\\"'),
+            )
 
             if attempt < MAX_RETRIES:
                 # Exponential backoff: 1s, 2s, 4s
                 wait_time = 2 ** (attempt - 1)
-                print(f"Retrying in {wait_time} seconds...")
+                logger.info(
+                    '{"event": "question_generation_retrying", "attempt": %d, "wait_seconds": %d}',
+                    attempt,
+                    wait_time,
+                )
                 time.sleep(wait_time)
 
     # All retries failed - raise exception
     error_message = (
         f"Question generation failed after {MAX_RETRIES} attempts. Last error: {last_error}"
     )
-    print(error_message)
+    logger.error(
+        '{"event": "question_generation_failed_all_retries", "max_retries": %d, "error": "%s"}',
+        MAX_RETRIES,
+        str(last_error).replace('"', '\\"'),
+    )
     raise Exception(error_message)

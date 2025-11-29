@@ -1,27 +1,37 @@
 """
-FastAPI microservice for question generation.
-This service handles OpenAI API calls, validation, and retry logic.
+FastAPI microservice for question generation and search.
+Uses Gemini for question generation and Tavily for search.
 Runs on port 8000, separate from Express.js server on port 3001.
 """
 
+import logging
 import os
 from pathlib import Path
-
-from dotenv import load_dotenv
-
-# Load environment variables from .env file in project root (one level up)
-env_path = Path(__file__).parent.parent / ".env"
-load_dotenv(dotenv_path=env_path)
-
 from typing import Optional  # noqa: E402
 
+from dotenv import load_dotenv
 from fastapi import FastAPI  # noqa: E402
 from fastapi.middleware.cors import CORSMiddleware  # noqa: E402
 from pydantic import BaseModel, Field  # noqa: E402
 
 from models.search import SearchRequest, SearchResponse  # noqa: E402
 from services.question_generator import generate_questions_with_retry  # noqa: E402
-from services.search_service import search_with_e2b_exa, search_with_tavily  # noqa: E402
+from services.search_service import search_with_tavily  # noqa: E402
+
+# Load environment variables from .env file in project root (one level up)
+env_path = Path(__file__).parent.parent / ".env"
+load_dotenv(dotenv_path=env_path)
+
+# Configure application-level logger (integrates with Uvicorn's logging)
+logger = logging.getLogger(__name__)
+
+log_level_str = os.getenv("LOG_LEVEL", "INFO").upper()
+try:
+    logging.getLogger().setLevel(log_level_str)
+except ValueError:
+    # Fallback to INFO if invalid log level is provided
+    logging.getLogger().setLevel("INFO")
+    logger.warning("Invalid LOG_LEVEL '%s', defaulting to INFO", log_level_str)
 
 app = FastAPI(
     title="Q&A Question Generator Service",
@@ -108,20 +118,21 @@ async def generate_questions_endpoint(request: GenerateQuestionsRequest):
 
     except Exception as e:
         # Handle unexpected errors
-        print(f"Unexpected error in generate_questions_endpoint: {e}")
+        logger.error(
+            '{"event": "generate_questions_unexpected_error", "error": "%s"}',
+            str(e).replace('"', '\\"'),
+        )
         return GenerateQuestionsResponse(success=False, error=str(e))
 
 
 @app.post("/api/search", response_model=SearchResponse)
 async def search_endpoint(request: SearchRequest):
     """
-    Search for products using E2B sandbox with Exa AI integration.
+    Search for products using Tavily-powered search.
 
     This endpoint:
-    - Creates an E2B sandbox with Exa MCP pre-configured
-    - Uses OpenAI with MCP tools to search via Exa
-    - Handles complex queries (top 10, filtering, etc.)
-    - Returns formatted search results
+    - Uses Tavily + Gemini to search for ecommerce products
+    - Handles complex queries and returns formatted search results
 
     Args:
         request: SearchRequest with query, answers, and optional user_id
@@ -130,30 +141,28 @@ async def search_endpoint(request: SearchRequest):
         SearchResponse with success status, results, and optional error
     """
     try:
-        search_provider = os.getenv("SEARCH_PROVIDER", "exa").lower()
-        if search_provider == "tavily":
-            result = await search_with_tavily(
-                user_query=request.query,
-                user_answers=request.answers,
-                questions=request.questions,
-                user_id=request.user_id,
-            )
-        else:
-            result = await search_with_e2b_exa(
-                user_query=request.query,
-                user_answers=request.answers,
-                questions=request.questions,
-                user_id=request.user_id,
-            )
+        result = await search_with_tavily(
+            user_query=request.query,
+            user_answers=request.answers,
+            questions=request.questions,
+            user_id=request.user_id,
+        )
 
         # Return formatted response
+        logger.info(
+            '{"event": "search_request_completed", "provider": "tavily", "success": %s}',
+            str(result.get("success", False)).lower(),
+        )
         return SearchResponse(
             success=result["success"], results=result.get("results"), error=result.get("error")
         )
 
     except Exception as e:
         # Handle unexpected errors
-        print(f"Unexpected error in search_endpoint: {e}")
+        logger.error(
+            '{"event": "search_unexpected_error", "error": "%s"}',
+            str(e).replace('"', '\\"'),
+        )
         return SearchResponse(success=False, results=None, error=str(e))
 
 
