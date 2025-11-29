@@ -29,20 +29,3 @@ jobs:
           fi
 
           echo "✔️ Source branch allowed."
-
-  copilot-review:
-    name: GitHub Copilot PR Review
-    runs-on: ubuntu-latest
-    needs: restrict-merge
-
-    permissions:
-      pull-requests: write
-      contents: read
-
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Run GitHub Copilot Code Review
-        uses: github/copilot-review@v1
-        with:
-          token: ${{ secrets.GITHUB_TOKEN }}
