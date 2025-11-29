@@ -18,7 +18,7 @@ jobs:
       - name: Check source branch
         id: check_branch
         run: |
-          ALLOWED=("Dev-Frontend" "Dev-Backend")
+          ALLOWED=("Dev-FrontEnd" "Dev-BackEnd")
           SRC="${{ github.head_ref }}"
 
           echo "🔍 PR Source Branch: $SRC"
