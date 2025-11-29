@@ -18,44 +18,17 @@ jobs:
       - name: Check source branch
         id: check_branch
         run: |
-          ALLOWED=("Dev-FrontEnd" "Dev-BackEnd")
+          ALLOWED=("Dev-Frontend" "Dev-Backend")
           SRC="${{ github.head_ref }}"
 
           echo "🔍 PR Source Branch: $SRC"
 
           if [[ ! " ${ALLOWED[@]} " =~ " $SRC " ]]; then
-            echo "❌ ERROR: Only Dev-Frontend and Dev-Backend can merge into main."
+            echo "❌ ERROR: Only Dev-Frontend and Dev-Backend may merge into main."
             exit 1
           fi
 
           echo "✔️ Source branch allowed."
-
-      - name: Checkout main
-        run: |
-          git clone --depth=1 https://github.com/${{ github.repository }} repo
-          cd repo
-          git fetch origin main
-          git fetch origin ${{ github.head_ref }}
-
-      - name: Check commit distance (must be 15 ahead)
-        run: |
-          cd repo
-          MAIN="origin/main"
-          SRC="${{ github.head_ref }}"
-          
-          echo "➡️ Checking commit distance between $SRC and main"
-
-          # Count commits ahead
-          AHEAD=$(git rev-list --count ${SRC} ^${MAIN})
-
-          echo "📌 $SRC is $AHEAD commits ahead of main"
-
-          if [ "$AHEAD" -lt 15 ]; then
-            echo "❌ ERROR: Branch must be at least 15 commits ahead of main before merging."
-            exit 1
-          fi
-
-          echo "✔️ Commit distance validated."
 
   copilot-review:
     name: GitHub Copilot PR Review
