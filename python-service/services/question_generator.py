@@ -6,7 +6,6 @@ Handles Gemini API calls, Pydantic validation, and retry with exponential backof
 import json
 import logging
 import os
-import re
 import time
 
 import google.generativeai as genai
@@ -16,7 +15,6 @@ from models.question import Question, QuestionsResponse
 from question_utils.question_helpers import (
     get_question_system_prompt,
     get_question_user_prompt,
-    remove_markdown_code_blocks,
 )
 
 logger = logging.getLogger(__name__)
@@ -52,6 +50,45 @@ def call_gemini_with_validation(
     system_prompt = get_question_system_prompt()
     user_prompt = get_question_user_prompt(user_query, num_questions, num_answers)
 
+    # Generate JSON schema from Pydantic model for structured output
+    # Remove $defs and example fields as Gemini doesn't support them
+    json_schema = QuestionsResponse.model_json_schema()
+
+    # Remove $defs and inline nested types
+    if "$defs" in json_schema:
+        # Inline the Question definition from $defs into the items schema
+        question_def = json_schema["$defs"]["Question"]
+        if "properties" in json_schema and "questions" in json_schema["properties"]:
+            json_schema["properties"]["questions"]["items"] = question_def
+        # Remove $defs
+        del json_schema["$defs"]
+
+    # Remove fields that Gemini doesn't accept
+    # Gemini only accepts: type, properties, required, items
+    # It doesn't accept: example, title, description, minItems, maxItems, minLength, etc.
+    def clean_schema_for_gemini(obj):
+        """Recursively remove fields that Gemini doesn't support"""
+        if isinstance(obj, dict):
+            cleaned = {}
+            for k, v in obj.items():
+                # Keep all property names (they're part of the schema structure)
+                # But only keep essential JSON Schema metadata fields
+                if k == "properties":
+                    # Keep all property definitions, but clean their values
+                    cleaned[k] = {
+                        prop_name: clean_schema_for_gemini(prop_schema)
+                        for prop_name, prop_schema in v.items()
+                    }
+                elif k in ["type", "required", "items"]:
+                    cleaned[k] = clean_schema_for_gemini(v)
+                # Skip all other metadata fields (example, title, description, minItems, maxItems, etc.)
+            return cleaned
+        elif isinstance(obj, list):
+            return [clean_schema_for_gemini(item) for item in obj]
+        return obj
+
+    json_schema = clean_schema_for_gemini(json_schema)
+
     try:
         # Configure Gemini
         genai.configure(api_key=gemini_api_key)
@@ -60,13 +97,19 @@ def call_gemini_with_validation(
             system_instruction=system_prompt,
         )
 
-        # Generate content with JSON mode instruction
+        # Generate content with structured output to ensure valid JSON
+        from google.generativeai.types import GenerationConfig
+
+        generation_config = GenerationConfig(
+            temperature=0.7,
+            max_output_tokens=1000,
+            response_mime_type="application/json",
+            response_schema=json_schema,  # Correct field name is response_schema
+        )
+
         response = model.generate_content(
             user_prompt,
-            generation_config={
-                "temperature": 0.7,
-                "max_output_tokens": 1000,  # Increased to prevent truncation
-            },
+            generation_config=generation_config,
         )
 
         # Extract text from Gemini response
@@ -87,25 +130,10 @@ def call_gemini_with_validation(
         if not content:
             raise ValueError("Empty response from Gemini")
 
-        # Parse JSON - Gemini may return markdown code blocks, so try to extract JSON
-        # Log the raw content for debugging (first 500 chars)
-        logger.debug(
-            '{"event": "gemini_raw_response", "snippet": "%s"}',
-            content[:500].replace('"', '\\"'),
-        )
-
-        # Remove markdown code blocks if present
-        content = remove_markdown_code_blocks(content)
-
-        # Try to extract JSON using regex if direct parsing fails
-        # Look for JSON object pattern: { ... }
-        json_match = re.search(r"\{[\s\S]*\}", content)
-        if json_match:
-            content = json_match.group(0)
-
-        # Try to parse JSON
+        # With structured output, we should get pure JSON
         try:
             parsed = json.loads(content)
+            logger.debug('{"event": "structured_output_success", "direct_json_parse": true}')
         except json.JSONDecodeError as json_error:
             # Log the problematic content for debugging
             logger.error(
@@ -117,10 +145,10 @@ def call_gemini_with_validation(
                 '{"event": "gemini_json_parse_context", "context": "%s"}',
                 content[max(0, json_error.pos - 50) : json_error.pos + 50].replace('"', '\\"'),
             )
-            raise
-
-        if not parsed.get("questions") or not isinstance(parsed["questions"], list):
-            raise ValueError("Invalid response structure: missing or invalid 'questions' array")
+            # Raise immediately - structured output should always return valid JSON
+            raise ValueError(
+                f"Structured output failed to return valid JSON: {json_error}"
+            ) from json_error
 
         # Validate with Pydantic
         validated = QuestionsResponse(**parsed)

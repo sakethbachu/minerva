@@ -5,13 +5,42 @@ This module provides functions to construct search queries and prompts.
 The raw prompt strings are defined in search_prompts.py.
 """
 
+import logging
+import os
+import re
 from typing import Optional
 from urllib.parse import urlparse
+
+from tavily import TavilyClient
 
 from search_utils.search_prompts import (
     SEARCH_SYSTEM_PROMPT,
     SEARCH_USER_PROMPT_TEMPLATE,
 )
+
+logger = logging.getLogger(__name__)
+
+
+def validate_and_setup_apis() -> tuple[str, str, TavilyClient]:
+    """
+    Validate API keys and create Tavily client.
+
+    Returns:
+        Tuple of (tavily_api_key, gemini_api_key, tavily_client)
+
+    Raises:
+        ValueError: If required API keys are not set
+    """
+    tavily_api_key = os.getenv("TAVILY_API_KEY")
+    gemini_api_key = os.getenv("GEMINI_API_KEY")
+
+    if not tavily_api_key:
+        raise ValueError("TAVILY_API_KEY environment variable is not set")
+    if not gemini_api_key:
+        raise ValueError("GEMINI_API_KEY environment variable is not set")
+
+    tavily_client = TavilyClient(api_key=tavily_api_key)
+    return tavily_api_key, gemini_api_key, tavily_client
 
 
 def construct_search_query(
@@ -106,10 +135,272 @@ def normalize_url(url: Optional[str]) -> str:
     return normalized.lower()
 
 
+def clean_snippet_text(text: Optional[str], max_length: int = 400) -> Optional[str]:
+    """
+    Clean raw snippet text into a compact summary suitable for UI display.
+
+    Removes markdown formatting, normalizes whitespace, and truncates to max_length.
+    Tries to truncate at sentence boundaries for better readability.
+    """
+    if not text:
+        return None
+
+    # Remove markdown: links [text](url) -> text, headers # -> removed, bold/italic * -> space
+    cleaned = re.sub(r"\[([^\]]+)\]\([^\)]+\)", r"\1", text)
+    cleaned = re.sub(r"#{1,6}\s*", "", cleaned)
+    cleaned = cleaned.replace("*", " ").replace("\\n", " ")
+
+    # Normalize whitespace and check if result is empty
+    cleaned = re.sub(r"\s+", " ", cleaned).strip()
+    if not cleaned:
+        return None
+
+    # Truncate at sentence boundary if possible (>120 chars), otherwise add ellipsis
+    if len(cleaned) > max_length:
+        truncated = cleaned[:max_length]
+        last_period = truncated.rfind(".")
+        if last_period > 120:
+            cleaned = truncated[: last_period + 1]
+        else:
+            cleaned = truncated.strip() + "…"
+
+    return cleaned
+
+
+def enrich_results_with_candidates(results: list[dict], candidates: list[dict]) -> None:
+    """Fill missing URLs/images/descriptions from Tavily candidate data."""
+    if not results or not candidates:
+        return
+
+    candidate_by_url = {}
+    candidate_by_title = {}
+    for candidate in candidates:
+        norm_url = normalize_url(candidate.get("url"))
+        if norm_url:
+            candidate_by_url[norm_url] = candidate
+        title = (candidate.get("title") or "").lower()
+        if title:
+            candidate_by_title[title] = candidate
+
+    for parsed in results:
+        parsed_url_norm = normalize_url(parsed.get("url"))
+        parsed_title = (parsed.get("title") or "").lower()
+        candidate = candidate_by_url.get(parsed_url_norm)
+        if not candidate and parsed_title:
+            candidate = candidate_by_title.get(parsed_title)
+
+        if not candidate:
+            continue
+
+        if not parsed.get("url") and candidate.get("url"):
+            parsed["url"] = candidate["url"]
+        if not parsed.get("image_url") and candidate.get("image_url"):
+            parsed["image_url"] = candidate["image_url"]
+        if not parsed.get("description") and candidate.get("content"):
+            cleaned = clean_snippet_text(candidate.get("content"))
+            if cleaned:
+                parsed["description"] = cleaned
+
+
+def extract_image_from_url(client: TavilyClient, url: str) -> Optional[str]:
+    """
+    Extract product image from a URL using Tavily's extract endpoint as fallback.
+
+    Args:
+        client: TavilyClient instance
+        url: Product page URL
+
+    Returns:
+        Image URL if found, None otherwise
+    """
+    try:
+        extract_response = client.extract(
+            urls=[url],
+            include_images=True,
+        )
+
+        if extract_response and extract_response.get("results"):
+            result = extract_response["results"][0]
+            images = result.get("images") or []
+
+            if images:
+                # Prefer product images (filter out icons, logos, etc.)
+                for img_url in images:
+                    img_str = str(img_url)  # Convert to string for type safety
+                    img_lower = img_str.lower()
+                    # Skip small images, icons, logos
+                    if any(skip in img_lower for skip in ["icon", "logo", "favicon", "sprite"]):
+                        continue
+                    # Prefer product-related images
+                    if any(prod in img_lower for prod in ["product", "item", "image", "photo"]):
+                        return img_str
+                    # Accept images with common extensions
+                    if any(ext in img_lower for ext in [".jpg", ".jpeg", ".png", ".webp"]):
+                        return img_str
+
+                # Fallback: return first image if no product image found
+                return str(images[0]) if images else None
+
+    except Exception as e:
+        logger.debug(
+            '{"event": "image_extraction_failed", "url": "%s", "error": "%s"}',
+            url,
+            str(e).replace('"', '\\"'),
+        )
+
+    return None
+
+
+def enhance_search_query(query: str) -> str:
+    """
+    Enhance search query with product terms if missing.
+
+    Adds "buy" and "product" terms to improve ecommerce search results.
+
+    Args:
+        query: Original search query
+
+    Returns:
+        Enhanced query string with product terms if needed
+    """
+    enhanced_query = query
+    product_terms = []
+    if "buy" not in query.lower():
+        product_terms.append("buy")
+    if "product" not in query.lower() and "item" not in query.lower():
+        product_terms.append("product")
+    if product_terms:
+        enhanced_query = f"{query} {' '.join(product_terms)}"
+    return enhanced_query
+
+
+def transform_candidates(tavily_results: list[dict]) -> tuple[list[dict], str]:
+    """
+    Transform Tavily results to candidate payload and JSON string.
+
+    Args:
+        tavily_results: List of Tavily search result dictionaries
+
+    Returns:
+        Tuple of (candidate_payload list, candidate_json string)
+    """
+    import json
+
+    candidate_payload = []
+    for res in tavily_results:
+        candidate_payload.append(
+            {
+                "title": res.get("title"),
+                "description": clean_snippet_text(res.get("content")),
+                "url": res.get("url"),
+                "image_url": res.get("image_url"),
+                "score": res.get("score"),
+            }
+        )
+
+    candidate_json = json.dumps(candidate_payload, ensure_ascii=False, indent=2)
+    return candidate_payload, candidate_json
+
+
+def extract_gemini_text(gemini_raw) -> str:
+    """
+    Extract text content from Gemini response object.
+
+    Handles multiple candidates, parts, and fallback scenarios.
+
+    Args:
+        gemini_raw: Raw Gemini API response object
+
+    Returns:
+        Extracted text content as string
+
+    Raises:
+        ValueError: If no text content can be extracted
+    """
+    gemini_text = ""
+
+    if getattr(gemini_raw, "candidates", None):
+        fallback_text = ""
+        debug_candidates = []
+        for candidate in gemini_raw.candidates:
+            parts_payload = []
+            if candidate.content and getattr(candidate.content, "parts", None):
+                parts_payload = [
+                    getattr(part, "text", "") or "" for part in candidate.content.parts
+                ]
+            if candidate.content and getattr(candidate.content, "parts", None):
+                candidate_text = "".join(
+                    getattr(part, "text", "") or "" for part in candidate.content.parts
+                )
+                if candidate.finish_reason == "STOP":
+                    gemini_text = candidate_text
+                    break
+                if not fallback_text:
+                    fallback_text = candidate_text
+            debug_candidates.append(
+                {
+                    "finish_reason": getattr(candidate, "finish_reason", None),
+                    "parts_count": len(parts_payload),
+                }
+            )
+        if not gemini_text:
+            gemini_text = fallback_text
+        logger.debug(
+            '{"event": "tavily_gemini_candidates_diagnostics", "candidates": "%s"}',
+            str(debug_candidates).replace('"', '\\"'),
+        )
+
+    if not gemini_text:
+        try:
+            gemini_text = gemini_raw.text
+        except Exception:
+            gemini_text = ""
+
+    if not gemini_text:
+        raise ValueError("Gemini did not return any content")
+
+    return gemini_text
+
+
+def create_fallback_results(candidate_payload: list[dict], max_candidates: int) -> list[dict]:
+    """
+    Create fallback results from Tavily candidates when Gemini parsing fails.
+
+    Args:
+        candidate_payload: List of candidate dictionaries from Tavily
+        max_candidates: Maximum number of candidates to include
+
+    Returns:
+        List of fallback result dictionaries
+    """
+    fallback_results = []
+    for candidate in candidate_payload[:max_candidates]:
+        fallback_result = {
+            "title": candidate.get("title") or "Product",
+            "description": candidate.get("description"),
+            "url": candidate.get("url"),
+            "image_url": candidate.get("image_url"),
+            "relevance": min(candidate.get("score", 0.8), 1.0) if candidate.get("score") else 0.8,
+        }
+        # Only add if we have at least a title or URL
+        if fallback_result.get("title") or fallback_result.get("url"):
+            fallback_results.append(fallback_result)
+
+    return fallback_results
+
+
 __all__ = [
     "SEARCH_SYSTEM_PROMPT",
     "SEARCH_USER_PROMPT_TEMPLATE",
+    "validate_and_setup_apis",
     "construct_search_query",
     "build_search_prompt",
     "normalize_url",
+    "clean_snippet_text",
+    "enrich_results_with_candidates",
+    "extract_image_from_url",
+    "enhance_search_query",
+    "transform_candidates",
+    "extract_gemini_text",
+    "create_fallback_results",
 ]

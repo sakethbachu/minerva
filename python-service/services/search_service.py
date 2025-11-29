@@ -8,18 +8,24 @@ import json
 import logging
 import os
 import re
-from types import SimpleNamespace
-from typing import Any, Optional
+from typing import Optional
 
 import google.generativeai as genai
 from tavily import TavilyClient
 
+from models.search import LLMSearchResults
 from search_utils.search_helpers import (
     SEARCH_SYSTEM_PROMPT,
     SEARCH_USER_PROMPT_TEMPLATE,
     build_search_prompt,
+    clean_snippet_text,
     construct_search_query,
-    normalize_url,
+    create_fallback_results,
+    enhance_search_query,
+    enrich_results_with_candidates,
+    extract_gemini_text,
+    transform_candidates,
+    validate_and_setup_apis,
 )
 from services.tavily_mcp_server import (
     get_ecommerce_domains,
@@ -33,39 +39,204 @@ logger = logging.getLogger(__name__)
 MAX_RETRIES = 3
 
 
-def _enrich_results_with_candidates(results: list[dict], candidates: list[dict]) -> None:
-    """Fill missing URLs/images/descriptions from Tavily candidate data."""
-    if not results or not candidates:
-        return
+async def _execute_tavily_search(
+    client: TavilyClient,
+    search_query: str,
+    max_candidates: int,
+    loop: asyncio.AbstractEventLoop,
+) -> list[dict]:
+    """
+    Execute Tavily search with query enhancement.
 
-    candidate_by_url = {}
-    candidate_by_title = {}
-    for candidate in candidates:
-        norm_url = normalize_url(candidate.get("url"))
-        if norm_url:
-            candidate_by_url[norm_url] = candidate
-        title = (candidate.get("title") or "").lower()
-        if title:
-            candidate_by_title[title] = candidate
+    Args:
+        client: TavilyClient instance
+        search_query: Search query string
+        max_candidates: Maximum number of candidates to return
+        loop: Async event loop for executor
 
-    for parsed in results:
-        parsed_url_norm = normalize_url(parsed.get("url"))
-        parsed_title = (parsed.get("title") or "").lower()
-        candidate = candidate_by_url.get(parsed_url_norm)
-        if not candidate and parsed_title:
-            candidate = candidate_by_title.get(parsed_title)
+    Returns:
+        List of Tavily result dictionaries
+    """
 
-        if not candidate:
-            continue
+    def _run_tavily():
+        enhanced_query = enhance_search_query(search_query)
+        return _tavily_search_sync(
+            client,
+            enhanced_query,
+            max_results=max_candidates,
+            ecommerce_only=True,
+            product_pages_only=True,
+        )
 
-        if not parsed.get("url") and candidate.get("url"):
-            parsed["url"] = candidate["url"]
-        if not parsed.get("image_url") and candidate.get("image_url"):
-            parsed["image_url"] = candidate["image_url"]
-        if not parsed.get("description") and candidate.get("content"):
-            cleaned = clean_snippet_text(candidate.get("content"))
-            if cleaned:
-                parsed["description"] = cleaned
+    tavily_response = await loop.run_in_executor(None, _run_tavily)
+    return tavily_response.get("results") or []
+
+
+async def _call_gemini_with_retry(
+    gemini_api_key: str,
+    system_prompt: str,
+    base_user_prompt: str,
+    max_retries: int,
+    loop: asyncio.AbstractEventLoop,
+) -> list[dict]:
+    """
+    Call Gemini API with retry logic and validation using structured output.
+
+    Args:
+        gemini_api_key: Gemini API key
+        system_prompt: System prompt for Gemini
+        base_user_prompt: Base user prompt (will be enhanced on retry)
+        max_retries: Maximum number of retry attempts
+        loop: Async event loop for executor
+
+    Returns:
+        List of parsed result dictionaries
+
+    Raises:
+        ValueError: If all retries fail with validation errors
+        Exception: If non-validation error occurs
+    """
+    gemini_model_name = os.getenv("GEMINI_MODEL", "gemini-2.5-flash")
+
+    # Generate JSON schema from Pydantic model for structured output
+    # Remove $defs and example fields as Gemini doesn't support them
+    json_schema = LLMSearchResults.model_json_schema()
+
+    # Remove $defs and inline nested types
+    if "$defs" in json_schema:
+        # Inline any nested definitions from $defs
+        defs = json_schema["$defs"]
+
+        # Find and replace $ref references with actual definitions
+        def inline_refs(obj):
+            if isinstance(obj, dict):
+                if "$ref" in obj:
+                    ref_path = obj["$ref"].split("/")[-1]
+                    if ref_path in defs:
+                        return inline_refs(defs[ref_path])
+                return {k: inline_refs(v) for k, v in obj.items()}
+            elif isinstance(obj, list):
+                return [inline_refs(item) for item in obj]
+            return obj
+
+        json_schema = inline_refs(json_schema)
+        # Remove $defs if still present
+        if "$defs" in json_schema:
+            del json_schema["$defs"]
+
+    # Remove fields that Gemini doesn't accept
+    # Gemini only accepts: type, properties, required, items
+    # It doesn't accept: example, title, description, minItems, maxItems, minLength, etc.
+    def clean_schema_for_gemini(obj):
+        """Recursively remove fields that Gemini doesn't support"""
+        if isinstance(obj, dict):
+            cleaned = {}
+            for k, v in obj.items():
+                # Keep all property names (they're part of the schema structure)
+                # But only keep essential JSON Schema metadata fields
+                if k == "properties":
+                    # Keep all property definitions, but clean their values
+                    cleaned[k] = {
+                        prop_name: clean_schema_for_gemini(prop_schema)
+                        for prop_name, prop_schema in v.items()
+                    }
+                elif k in ["type", "required", "items"]:
+                    cleaned[k] = clean_schema_for_gemini(v)
+                # Skip all other metadata fields (example, title, description, minItems, maxItems, etc.)
+            return cleaned
+        elif isinstance(obj, list):
+            return [clean_schema_for_gemini(item) for item in obj]
+        return obj
+
+    json_schema = clean_schema_for_gemini(json_schema)
+
+    for attempt in range(max_retries):
+        try:
+            user_prompt = base_user_prompt
+            # No retry enhancement needed - instruction is already in base prompt
+
+            def _run_gemini(prompt=user_prompt):
+                # Capture user_prompt as default argument to avoid closure issue
+                genai.configure(api_key=gemini_api_key)
+                model = genai.GenerativeModel(
+                    gemini_model_name,
+                    system_instruction=system_prompt,
+                )
+                from google.generativeai.types import GenerationConfig
+
+                generation_config = GenerationConfig(
+                    temperature=0.4,
+                    max_output_tokens=4096,
+                    response_mime_type="application/json",
+                    response_schema=json_schema,  # Correct field name is response_schema
+                )
+
+                return model.generate_content(
+                    prompt,
+                    generation_config=generation_config,
+                )
+
+            gemini_raw = await loop.run_in_executor(None, _run_gemini)
+
+            if getattr(gemini_raw, "prompt_feedback", None):
+                logger.debug(
+                    '{"event": "tavily_gemini_prompt_feedback", "feedback": "%s"}',
+                    str(gemini_raw.prompt_feedback).replace('"', '\\"'),
+                )
+
+            gemini_text = extract_gemini_text(gemini_raw)
+
+            # With structured output, we should get pure JSON
+            try:
+                json_data = json.loads(gemini_text)
+                logger.debug('{"event": "structured_output_success", "direct_json_parse": true}')
+            except json.JSONDecodeError as e:
+                logger.warning(
+                    '{"event": "structured_output_json_parse_failed", "attempt": %d, "error": "%s"}',
+                    attempt + 1,
+                    str(e).replace('"', '\\"'),
+                )
+                # Raise immediately to trigger retry - structured output should always return valid JSON
+                raise ValueError(f"Structured output failed to return valid JSON: {e}") from e
+
+            # Validate with Pydantic
+            validated = LLMSearchResults.model_validate(json_data)
+
+            # Convert to list of dicts
+            results = [result.model_dump(exclude_none=True) for result in validated.results]
+
+            logger.info('{"event": "parse_success", "result_count": %d}', len(results))
+            return results  # Success, return results
+
+        except ValueError as e:
+            logger.warning(
+                '{"event": "validation_failed_retry", "attempt": %d, "max_retries": %d, "error": "%s"}',
+                attempt + 1,
+                max_retries,
+                str(e).replace('"', '\\"'),
+            )
+            if attempt < max_retries - 1:
+                # Will retry
+                continue
+            else:
+                # Final attempt failed
+                logger.error(
+                    '{"event": "validation_failed_final", "error": "%s"}',
+                    str(e).replace('"', '\\"'),
+                )
+                raise
+        except Exception as e:
+            logger.error(
+                '{"event": "gemini_call_error", "attempt": %d, "error": "%s"}',
+                attempt + 1,
+                str(e).replace('"', '\\"'),
+            )
+            # For non-validation errors, don't retry
+            raise
+
+    # This should never be reached, but satisfies mypy's type checker
+    # The loop above always returns or raises
+    raise RuntimeError("Unexpected: loop completed without return or raise")
 
 
 def _tavily_search_sync(
@@ -92,322 +263,78 @@ def _tavily_search_sync(
     )
 
     results = response.get("results") or []
+
+    # Debug: Log raw results count before filtering
+    logger.debug(
+        '{"event": "tavily_raw_results", "count": %d, "query": "%s"}',
+        len(results),
+        query[:100].replace('"', '\\"'),
+    )
+
     if product_pages_only:
         product_results = [res for res in results if is_product_page(res.get("url", ""))]
+        logger.debug(
+            '{"event": "product_page_filter", "before": %d, "after": %d}',
+            len(results),
+            len(product_results),
+        )
+        # Log URLs that were filtered out for debugging
+        if len(results) > 0 and len(product_results) == 0:
+            logger.warning(
+                '{"event": "all_results_filtered_out", "sample_urls": "%s"}',
+                ", ".join([r.get("url", "")[:50] for r in results[:3]]).replace('"', '\\"'),
+            )
         response["results"] = product_results[:max_results]
     else:
         response["results"] = results[:max_results]
 
+    # Try to match images from top-level images array
     if response.get("results") and response.get("images"):
         matched = match_images_to_results(response["results"], response["images"])
         for idx, result in enumerate(response["results"]):
             if idx in matched:
                 result["image_url"] = matched[idx]
+                logger.debug(
+                    '{"event": "image_matched", "url": "%s", "image": "%s"}',
+                    result.get("url", "")[:100],
+                    matched[idx][:100].replace('"', '\\"'),
+                )
 
-    return response
+    # Check if results have images embedded in them (some Tavily responses include this)
+    for result in response.get("results", []):
+        if not result.get("image_url") and result.get("images"):
+            # Some results have an "images" array directly
+            images = result.get("images") or []
+            if images:
+                # Prefer product images
+                for img_url in images:
+                    img_lower = str(img_url).lower()
+                    if any(skip in img_lower for skip in ["icon", "logo", "favicon", "sprite"]):
+                        continue
+                    if any(ext in img_lower for ext in [".jpg", ".jpeg", ".png", ".webp"]):
+                        result["image_url"] = img_url
+                        logger.debug(
+                            '{"event": "image_from_result", "url": "%s"}',
+                            result.get("url", "")[:100],
+                        )
+                        break
 
+    # Image extraction fallback removed for performance
+    # Images will only come from Tavily's search results or embedded in results
+    # This saves 3-4 seconds per result that would need extraction
 
-def parse_response(llm_response) -> list[dict]:
-    """
-    Parse LLM response and extract structured search results.
-
-    The LLM returns recommendations in a structured format like:
-    1. Product: [Name]
-       Description: [Text]
-       URL: [Link]
-       Why It Matches: [Text]
-
-    Args:
-        llm_response: LLM ChatCompletion-like response object with
-            choices[0].message.content containing the text to parse
-
-    Returns:
-        List of result dictionaries with structure:
-        [
-            {
-                "title": str,
-                "description": str,
-                "url": str,
-                "relevance": float,
-                "why_matches": str (optional)
-            }
-        ]
-    """
-    results: list[dict[str, Any]] = []
-
-    try:
-        message = llm_response.choices[0].message
-        content = message.content
-
-        if not content:
-            logger.warning('{"event": "llm_no_content"}')
-            return results
-
-        # Debug: Log first 500 chars of content
-        logger.debug(
-            '{"event": "llm_response_preview", "snippet": "%s"}',
-            content[:500].replace('"', '\\"'),
+    # Log summary of image coverage
+    results_with_images = sum(1 for r in response.get("results", []) if r.get("image_url"))
+    total_results = len(response.get("results", []))
+    if total_results > 0:
+        logger.info(
+            '{"event": "image_coverage", "with_images": %d, "total": %d, "percentage": %.1f}',
+            results_with_images,
+            total_results,
+            (results_with_images / total_results) * 100,
         )
 
-        # Try to parse JSON first if present
-        try:
-            json_start = content.find("{")
-            json_end = content.rfind("}") + 1
-            if json_start >= 0 and json_end > json_start:
-                json_str = content[json_start:json_end]
-                parsed = json.loads(json_str)
-                if isinstance(parsed, list):
-                    return parsed
-                elif isinstance(parsed, dict) and "results" in parsed:
-                    return parsed["results"]  # type: ignore[no-any-return]
-        except json.JSONDecodeError:
-            pass
-
-        # Parse structured text format
-        # Pattern: "1. Product: [Name]" or "**Product Name**" or "Product: [Name]"
-        lines = content.split("\n")
-        current_result: dict[str, Any] = {}
-        current_section = None
-
-        for line in lines:
-            line = line.strip()
-            if not line:
-                continue
-
-            # Detect product number (1., 2., 3., etc.)
-            if line and line[0].isdigit() and ("." in line[:3] or ":" in line[:3]):
-                # Save previous result
-                if current_result and current_result.get("title"):
-                    results.append(current_result)
-
-                # Start new result
-                current_result = {}
-                current_section = None
-
-                # Extract title from "1. Product: Name" or "1. **Name**"
-                title_match = line.split(":", 1)
-                if len(title_match) > 1:
-                    title = title_match[1].strip()
-                    # Remove markdown formatting
-                    title = title.strip("*").strip()
-                    current_result["title"] = title
-                elif "**" in line:
-                    # Extract from "1. **Product Name**"
-                    title = line.split("**")
-                    if len(title) > 1:
-                        current_result["title"] = title[1].strip()
-
-            # Detect "Product:" or "**Product Name**"
-            elif line.startswith("**") and line.endswith("**") and len(line) > 4:
-                if current_result and current_result.get("title"):
-                    results.append(current_result)
-                current_result = {"title": line.strip("*").strip()}
-                current_section = None
-
-            # Detect "Product:" label
-            elif ":" in line and any(
-                keyword in line.lower() for keyword in ["product", "name", "title"]
-            ):
-                parts = line.split(":", 1)
-                if len(parts) > 1:
-                    value = parts[1].strip().strip("*").strip()
-                    if value:
-                        current_result["title"] = value
-                        current_section = "title"
-
-            # Detect URL patterns
-            elif line.startswith("http://") or line.startswith("https://"):
-                # Check if it's an image URL
-                if any(
-                    ext in line.lower()
-                    for ext in [".jpg", ".jpeg", ".png", ".gif", ".webp", "image", "img"]
-                ):
-                    current_result["image_url"] = line
-                else:
-                    current_result["url"] = line
-                current_section = "url"
-
-            # Detect "URL:" label
-            elif line.lower().startswith("url:"):
-                url = line.split(":", 1)[1].strip()
-                if url.startswith("http"):
-                    current_result["url"] = url
-                elif url.startswith("[") and "](" in url:
-                    # Markdown link: [text](url)
-                    match = re.search(r"\]\((https?://[^\)]+)\)", url)
-                    if match:
-                        current_result["url"] = match.group(1)
-                current_section = "url"
-
-            # Detect "Image URL:" label
-            elif line.lower().startswith("image url:") or line.lower().startswith("image:"):
-                image_url = line.split(":", 1)[1].strip()
-                if image_url.startswith("http"):
-                    current_result["image_url"] = image_url
-                current_section = "image_url"
-
-            # Detect "Description:" label
-            elif line.lower().startswith("description:"):
-                desc = line.split(":", 1)[1].strip()
-                current_result["description"] = desc
-                current_section = "description"
-
-            # Detect "Why It Matches:" or "Why It Matches" label
-            elif "why" in line.lower() and "match" in line.lower():
-                why = line.split(":", 1)[1].strip() if ":" in line else ""
-                if why:
-                    current_result["why_matches"] = why
-                current_section = "why_matches"
-
-            # Detect "Additional Information:" label
-            elif "additional" in line.lower() or "information" in line.lower():
-                info = line.split(":", 1)[1].strip() if ":" in line else ""
-                if info:
-                    if "additional_info" not in current_result:
-                        current_result["additional_info"] = info
-                    else:
-                        current_result["additional_info"] += " " + info
-                current_section = "additional_info"
-
-            # Continue current section
-            else:
-                if current_result:
-                    if current_section == "description" or (
-                        not current_section and "description" not in current_result
-                    ):
-                        if "description" not in current_result:
-                            current_result["description"] = line
-                        else:
-                            current_result["description"] += " " + line
-                    elif current_section == "why_matches":
-                        if "why_matches" not in current_result:
-                            current_result["why_matches"] = line
-                        else:
-                            current_result["why_matches"] += " " + line
-                    elif current_section == "additional_info":
-                        if "additional_info" not in current_result:
-                            current_result["additional_info"] = line
-                        else:
-                            current_result["additional_info"] += " " + line
-
-        # Add last result
-        if current_result and current_result.get("title"):
-            results.append(current_result)
-
-        # Debug: Print parsing results
-        if results:
-            print(f"✅ Successfully parsed {len(results)} structured results")
-        else:
-            print("⚠️  No structured results found, attempting fallback parsing...")
-
-        # Extract all URLs from content as fallback
-        url_pattern = r"https?://[^\s\)]+"
-        all_urls = re.findall(url_pattern, content)
-
-        # If no structured results found, try smarter fallback parsing
-        if not results and content:
-            # Try to split by numbered items (1., 2., 3., etc.)
-            numbered_sections = re.split(r"\n\s*(\d+)\.\s+", content)
-
-            if len(numbered_sections) > 1:
-                # We have numbered sections
-                for i in range(1, len(numbered_sections), 2):
-                    if i + 1 < len(numbered_sections):
-                        section_text = numbered_sections[i + 1]
-                        fallback_result = {}
-
-                        # Extract URL
-                        url_pattern = r"https?://[^\s\)]+"
-                        urls = re.findall(url_pattern, section_text)
-                        if urls:
-                            fallback_result["url"] = urls[0]
-
-                        # Extract title (first line or bold text)
-                        lines = section_text.split("\n")
-                        first_line = lines[0].strip() if lines else ""
-
-                        # Try to find title in first line
-                        if ":" in first_line:
-                            title_part = first_line.split(":", 1)[0].strip()
-                            # Remove common prefixes
-                            title_part = re.sub(
-                                r"^(Product|Name|Title):?\s*", "", title_part, flags=re.IGNORECASE
-                            )
-                            fallback_result["title"] = (
-                                title_part if title_part else "Product Recommendation"
-                            )
-                        else:
-                            # Look for bold text
-                            bold_match = re.search(r"\*\*([^*]+)\*\*", first_line)
-                            if bold_match:
-                                fallback_result["title"] = bold_match.group(1).strip()
-                            else:
-                                fallback_result["title"] = (
-                                    first_line[:100] if first_line else "Product Recommendation"
-                                )
-
-                        # Rest of text as description
-                        description_lines = lines[1:] if len(lines) > 1 else []
-                        description = "\n".join(
-                            [line.strip() for line in description_lines if line.strip()]
-                        )
-                        if description:
-                            fallback_result["description"] = description[:500]
-
-                        if fallback_result.get("title"):
-                            results.append(fallback_result)
-            else:
-                # No numbered sections, try to extract at least one product name and URL
-                # Look for product names (text before URLs or in bold)
-                product_match = re.search(r"\*\*([^*]+)\*\*", content)
-                product_name = product_match.group(1) if product_match else "Product Recommendation"
-
-                results = [
-                    {
-                        "title": product_name,
-                        "description": content[:500] + "..." if len(content) > 500 else content,
-                        "url": all_urls[0] if all_urls else "",
-                        "relevance": 1.0,
-                    }
-                ]
-
-        # Final pass: ensure all results have URLs if we found any in content
-        if results and all_urls:
-            url_index = 0
-            for result in results:
-                if not result.get("url") and url_index < len(all_urls):
-                    result["url"] = all_urls[url_index]
-                    url_index += 1
-
-    except Exception as e:
-        print(f"Error parsing response: {e}")
-        import traceback
-
-        traceback.print_exc()
-        results = []
-
-    return results
-
-
-def clean_snippet_text(text: Optional[str], max_length: int = 400) -> Optional[str]:
-    """Clean raw snippet text into a compact summary suitable for UI display."""
-    if not text:
-        return None
-    cleaned = re.sub(r"\[([^\]]+)\]\([^\)]+\)", r"\1", text)
-    cleaned = re.sub(r"#{1,6}\s*", "", cleaned)
-    cleaned = cleaned.replace("*", " ")
-    cleaned = cleaned.replace("\\n", " ")
-    cleaned = re.sub(r"\s+", " ", cleaned).strip()
-    if not cleaned:
-        return None
-    if len(cleaned) > max_length:
-        truncated = cleaned[:max_length]
-        last_period = truncated.rfind(".")
-        if last_period > 120:
-            cleaned = truncated[: last_period + 1]
-        else:
-            cleaned = truncated.strip() + "…"
-    return cleaned
+    return response
 
 
 def extract_highlights(text: str, max_items: int = 4) -> Optional[list[str]]:
@@ -437,40 +364,29 @@ async def search_with_tavily(
 ) -> dict:
     """
     Search using Tavily (ecommerce-only) and let Gemini synthesize results.
+
+    Orchestrates the complete search workflow:
+    1. Validates API keys and sets up clients
+    2. Builds search queries and prompts
+    3. Executes Tavily search
+    4. Transforms candidates
+    5. Synthesizes with Gemini (with retry)
+    6. Handles fallback if needed
+    7. Enriches and returns results
     """
-    tavily_api_key = os.getenv("TAVILY_API_KEY")
-    gemini_api_key = os.getenv("GEMINI_API_KEY")
+    # 1. Setup: Validate APIs and create clients
+    tavily_api_key, gemini_api_key, tavily_client = validate_and_setup_apis()
+    loop = asyncio.get_running_loop()
 
-    if not tavily_api_key:
-        raise ValueError("TAVILY_API_KEY environment variable is not set")
-    if not gemini_api_key:
-        raise ValueError("GEMINI_API_KEY environment variable is not set")
-
+    # 2. Build search context
     prompt = build_search_prompt(user_query, user_answers, questions, user_id)
     search_query = construct_search_query(user_query, user_answers, questions)
 
-    tavily_client = TavilyClient(api_key=tavily_api_key)
-    loop = asyncio.get_running_loop()
-
-    def _run_tavily():
-        enhanced_query = search_query
-        product_terms = []
-        if "buy" not in search_query.lower():
-            product_terms.append("buy")
-        if "product" not in search_query.lower() and "item" not in search_query.lower():
-            product_terms.append("product")
-        if product_terms:
-            enhanced_query = f"{search_query} {' '.join(product_terms)}"
-        return _tavily_search_sync(
-            tavily_client,
-            enhanced_query,
-            max_results=max_candidates,
-            ecommerce_only=True,
-            product_pages_only=True,
-        )
-
-    tavily_response = await loop.run_in_executor(None, _run_tavily)
-    candidate_results = tavily_response.get("results") or []
+    # 3. Execute Tavily search
+    candidate_results = await _execute_tavily_search(
+        tavily_client, search_query, max_candidates, loop
+    )
+    # breakpoint()
 
     if not candidate_results:
         return {
@@ -479,95 +395,54 @@ async def search_with_tavily(
             "error": "No Tavily product results found. Try adjusting the query.",
         }
 
-    candidate_payload = []
-    for res in candidate_results:
-        candidate_payload.append(
-            {
-                "title": res.get("title"),
-                "description": clean_snippet_text(res.get("content")),
-                "url": res.get("url"),
-                "image_url": res.get("image_url"),
-                "score": res.get("score"),
-            }
-        )
+    # 4. Transform candidates
+    candidate_payload, candidate_json = transform_candidates(candidate_results)
 
-    candidate_json = json.dumps(candidate_payload, ensure_ascii=False, indent=2)
-
-    gemini_model_name = os.getenv("GEMINI_MODEL", "gemini-2.5-flash")
-
+    # 5. Synthesize with Gemini (with retry)
     system_prompt = SEARCH_SYSTEM_PROMPT
-    user_prompt = SEARCH_USER_PROMPT_TEMPLATE.format(
+    base_user_prompt = SEARCH_USER_PROMPT_TEMPLATE.format(
         prompt=prompt,
         candidate_json=candidate_json,
     )
 
-    def _run_gemini():
-        genai.configure(api_key=gemini_api_key)
-        model = genai.GenerativeModel(
-            gemini_model_name,
-            system_instruction=system_prompt,
+    try:
+        parsed_results = await _call_gemini_with_retry(
+            gemini_api_key,
+            system_prompt,
+            base_user_prompt,
+            MAX_RETRIES,
+            loop,
         )
-        return model.generate_content(
-            user_prompt,
-            generation_config={
-                "temperature": 0.4,
-                "max_output_tokens": 4096,
-            },
+    except ValueError as e:
+        # Validation failed after all retries - use fallback
+        logger.warning(
+            '{"event": "gemini_parsing_failed_fallback", "falling_back_to_tavily_results": true, "count": %d}',
+            len(candidate_payload),
         )
+        fallback_results = create_fallback_results(candidate_payload, max_candidates)
+        if fallback_results:
+            return {
+                "success": True,
+                "results": fallback_results,
+                "error": None,
+            }
+        return {
+            "success": False,
+            "results": [],
+            "error": f"Failed to get valid response after {MAX_RETRIES} attempts: {str(e)}",
+        }
+    except Exception as e:
+        # Unexpected error - return error response
+        return {
+            "success": False,
+            "results": [],
+            "error": f"Unexpected error: {str(e)}",
+        }
 
-    gemini_raw = await loop.run_in_executor(None, _run_gemini)
+    # 6. Enrich results with candidate data
+    enrich_results_with_candidates(parsed_results, candidate_payload)
 
-    if getattr(gemini_raw, "prompt_feedback", None):
-        logger.debug(
-            '{"event": "tavily_gemini_prompt_feedback", "feedback": "%s"}',
-            str(gemini_raw.prompt_feedback).replace('"', '\\"'),
-        )
-    gemini_text = ""
-    if getattr(gemini_raw, "candidates", None):
-        fallback_text = ""
-        debug_candidates = []
-        for candidate in gemini_raw.candidates:
-            parts_payload = []
-            if candidate.content and getattr(candidate.content, "parts", None):
-                parts_payload = [
-                    getattr(part, "text", "") or "" for part in candidate.content.parts
-                ]
-            if candidate.content and getattr(candidate.content, "parts", None):
-                candidate_text = "".join(
-                    getattr(part, "text", "") or "" for part in candidate.content.parts
-                )
-                if candidate.finish_reason == "STOP":
-                    gemini_text = candidate_text
-                    break
-                if not fallback_text:
-                    fallback_text = candidate_text
-            debug_candidates.append(
-                {
-                    "finish_reason": getattr(candidate, "finish_reason", None),
-                    "parts_count": len(parts_payload),
-                }
-            )
-        if not gemini_text:
-            gemini_text = fallback_text
-        logger.debug(
-            '{"event": "tavily_gemini_candidates_diagnostics", "candidates": "%s"}',
-            str(debug_candidates).replace('"', '\\"'),
-        )
-    if not gemini_text:
-        try:
-            gemini_text = gemini_raw.text
-        except Exception:
-            gemini_text = ""
-    if not gemini_text:
-        raise ValueError("Gemini did not return any content")
-
-    response = SimpleNamespace(
-        choices=[SimpleNamespace(message=SimpleNamespace(content=gemini_text))]
-    )
-
-    parsed_results = parse_response(response)
-    _enrich_results_with_candidates(parsed_results, candidate_payload)
-
+    # 7. Return success response
     return {
         "success": True,
         "results": parsed_results,

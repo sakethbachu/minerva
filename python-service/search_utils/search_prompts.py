@@ -21,10 +21,26 @@ Candidate products from Tavily (JSON):
 {candidate_json}
 
 Select the best 3-6 products for the user. For each, include:
-- Title
-- Description (concise)
-- URL (must be the exact buy link from candidates)
-- Image URL (if available in candidates)
-- Why It Matches
-- Additional Information
-Return the response as a numbered list."""
+- Title (required)
+- Description (concise, optional)
+- URL (must be the exact buy link from candidates, optional)
+- Image URL (if available in candidates, optional)
+- Why It Matches (optional)
+- Additional Information (optional)
+
+IMPORTANT: You MUST return your response as valid JSON only, in this exact format:
+{{
+  "results": [
+    {{
+      "title": "Product Name",
+      "description": "Product description",
+      "url": "https://example.com/product",
+      "image_url": "https://example.com/image.jpg",
+      "relevance": 0.95,
+      "why_matches": "Explanation text",
+      "additional_info": "Additional details"
+    }}
+  ]
+}}
+
+CRITICAL: Return ONLY valid JSON matching the schema. Do NOT include markdown code blocks, do NOT include explanations, do NOT include any text before or after the JSON. Start your response with '{{' and end with '}}'."""
