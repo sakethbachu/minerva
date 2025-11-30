@@ -4,7 +4,7 @@ Equivalent to TypeScript Zod schemas in src/types/question.types.ts
 """
 
 from pydantic import BaseModel, Field, field_validator
-from typing import List
+from typing import list as List
 
 
 class Question(BaseModel):
