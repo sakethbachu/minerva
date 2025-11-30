@@ -4,18 +4,17 @@ Equivalent to TypeScript Zod schemas in src/types/question.types.ts
 """
 
 from pydantic import BaseModel, Field, field_validator
-from typing import List
 
 
 class Question(BaseModel):
     """A single question with its answer options"""
     id: str
     text: str = Field(..., min_length=5, description="Question text (minimum 5 characters)")
-    answers: List[str] = Field(..., min_length=2, max_length=6, description="Answer options (2-6 items)")
+    answers: list[str] = Field(..., min_length=2, max_length=6, description="Answer options (2-6 items)")
 
     @field_validator('answers')
     @classmethod
-    def validate_answers_count(cls, v: List[str]) -> List[str]:
+    def validate_answers_count(cls, v: list[str]) -> list[str]:
         """Ensure answers array has 2-6 items"""
         if len(v) < 2:
             raise ValueError('answers must have at least 2 items')
@@ -36,11 +35,11 @@ class Question(BaseModel):
 
 class QuestionsResponse(BaseModel):
     """Response containing a list of questions"""
-    questions: List[Question] = Field(..., min_length=1, max_length=10, description="List of questions (1-10 items)")
+    questions: list[Question] = Field(..., min_length=1, max_length=10, description="List of questions (1-10 items)")
 
     @field_validator('questions')
     @classmethod
-    def validate_questions_count(cls, v: List[Question]) -> List[Question]:
+    def validate_questions_count(cls, v: list[Question]) -> list[Question]:
         """Ensure questions array has 1-10 items"""
         if len(v) < 1:
             raise ValueError('questions must have at least 1 item')
