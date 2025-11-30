@@ -52,30 +52,44 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
 
-      - name: Setup Python
+      - name: Setup Python 3.9
         uses: actions/setup-python@v5
         with:
           python-version: '3.9'
           cache: 'pip'
           cache-dependency-path: 'python-service/requirements.txt'
 
-      - name: Install dependencies
+      - name: Verify Python version
+        run: python --version
+
+      - name: Create virtual environment
+        working-directory: python-service
+        run: python -m venv venv
+
+      - name: Activate virtual environment and install dependencies
         working-directory: python-service
         run: |
+          source venv/bin/activate
           python -m pip install --upgrade pip
           pip install -r requirements.txt
 
       - name: Run Ruff linter
         working-directory: python-service
-        run: ruff check .
+        run: |
+          source venv/bin/activate
+          ruff check .
 
       - name: Run Ruff formatter check
         working-directory: python-service
-        run: ruff format --check . || (echo "❌ Code formatting check failed. Run 'ruff format .' to fix." && exit 1)
+        run: |
+          source venv/bin/activate
+          ruff format --check . || (echo "❌ Code formatting check failed. Run 'ruff format .' to fix." && exit 1)
 
       - name: Run MyPy type checker
         working-directory: python-service
-        run: mypy .
+        run: |
+          source venv/bin/activate
+          mypy .
 
   lint-summary:
     name: Lint Summary
