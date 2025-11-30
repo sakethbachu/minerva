@@ -4,26 +4,26 @@ Uses Tavily for search and Gemini to synthesize and rank results.
 """
 
 import asyncio
-import json
 import logging
 import os
 import re
 from typing import Optional
 
-import google.generativeai as genai
 from tavily import TavilyClient
 
-from models.search import LLMSearchResults
 from search_utils.search_helpers import (
     SEARCH_SYSTEM_PROMPT,
     SEARCH_USER_PROMPT_TEMPLATE,
     build_search_prompt,
+    call_gemini_search_api,
     clean_snippet_text,
     construct_search_query,
     create_fallback_results,
     enhance_search_query,
     enrich_results_with_candidates,
     extract_gemini_text,
+    parse_and_validate_search_response,
+    prepare_search_schema,
     transform_candidates,
     validate_and_setup_apis,
 )
@@ -98,114 +98,48 @@ async def _call_gemini_with_retry(
     """
     gemini_model_name = os.getenv("GEMINI_MODEL", "gemini-2.5-flash")
 
-    # Generate JSON schema from Pydantic model for structured output
-    # Remove $defs and example fields as Gemini doesn't support them
-    json_schema = LLMSearchResults.model_json_schema()
+    # Prepare schema once (before retry loop)
+    json_schema = prepare_search_schema()
 
-    # Remove $defs and inline nested types
-    if "$defs" in json_schema:
-        # Inline any nested definitions from $defs
-        defs = json_schema["$defs"]
+    def _run_gemini(user_prompt: str):
+        """
+        Wrapper for blocking Gemini API call to run in executor.
 
-        # Find and replace $ref references with actual definitions
-        def inline_refs(obj):
-            if isinstance(obj, dict):
-                if "$ref" in obj:
-                    ref_path = obj["$ref"].split("/")[-1]
-                    if ref_path in defs:
-                        return inline_refs(defs[ref_path])
-                return {k: inline_refs(v) for k, v in obj.items()}
-            elif isinstance(obj, list):
-                return [inline_refs(item) for item in obj]
-            return obj
+        Args:
+            user_prompt: The user prompt to send to Gemini
 
-        json_schema = inline_refs(json_schema)
-        # Remove $defs if still present
-        if "$defs" in json_schema:
-            del json_schema["$defs"]
-
-    # Remove fields that Gemini doesn't accept
-    # Gemini only accepts: type, properties, required, items
-    # It doesn't accept: example, title, description, minItems, maxItems, minLength, etc.
-    def clean_schema_for_gemini(obj):
-        """Recursively remove fields that Gemini doesn't support"""
-        if isinstance(obj, dict):
-            cleaned = {}
-            for k, v in obj.items():
-                # Keep all property names (they're part of the schema structure)
-                # But only keep essential JSON Schema metadata fields
-                if k == "properties":
-                    # Keep all property definitions, but clean their values
-                    cleaned[k] = {
-                        prop_name: clean_schema_for_gemini(prop_schema)
-                        for prop_name, prop_schema in v.items()
-                    }
-                elif k in ["type", "required", "items"]:
-                    cleaned[k] = clean_schema_for_gemini(v)
-                # Skip all other metadata fields (example, title, description, minItems, maxItems, etc.)
-            return cleaned
-        elif isinstance(obj, list):
-            return [clean_schema_for_gemini(item) for item in obj]
-        return obj
-
-    json_schema = clean_schema_for_gemini(json_schema)
+        Returns:
+            Gemini API response object
+        """
+        return call_gemini_search_api(
+            user_prompt=user_prompt,
+            system_prompt=system_prompt,
+            json_schema=json_schema,
+            api_key=gemini_api_key,
+            model_name=gemini_model_name,
+        )
 
     for attempt in range(max_retries):
         try:
             user_prompt = base_user_prompt
             # No retry enhancement needed - instruction is already in base prompt
 
-            def _run_gemini(prompt=user_prompt):
-                # Capture user_prompt as default argument to avoid closure issue
-                genai.configure(api_key=gemini_api_key)
-                model = genai.GenerativeModel(
-                    gemini_model_name,
-                    system_instruction=system_prompt,
-                )
-                from google.generativeai.types import GenerationConfig
+            # Call Gemini API via executor
+            gemini_raw = await loop.run_in_executor(None, _run_gemini, user_prompt)
 
-                generation_config = GenerationConfig(
-                    temperature=0.4,
-                    max_output_tokens=4096,
-                    response_mime_type="application/json",
-                    response_schema=json_schema,  # Correct field name is response_schema
-                )
-
-                return model.generate_content(
-                    prompt,
-                    generation_config=generation_config,
-                )
-
-            gemini_raw = await loop.run_in_executor(None, _run_gemini)
-
+            # Log prompt feedback if available
             if getattr(gemini_raw, "prompt_feedback", None):
                 logger.debug(
                     '{"event": "tavily_gemini_prompt_feedback", "feedback": "%s"}',
                     str(gemini_raw.prompt_feedback).replace('"', '\\"'),
                 )
 
+            # Extract text from response
             gemini_text = extract_gemini_text(gemini_raw)
 
-            # With structured output, we should get pure JSON
-            try:
-                json_data = json.loads(gemini_text)
-                logger.debug('{"event": "structured_output_success", "direct_json_parse": true}')
-            except json.JSONDecodeError as e:
-                logger.warning(
-                    '{"event": "structured_output_json_parse_failed", "attempt": %d, "error": "%s"}',
-                    attempt + 1,
-                    str(e).replace('"', '\\"'),
-                )
-                # Raise immediately to trigger retry - structured output should always return valid JSON
-                raise ValueError(f"Structured output failed to return valid JSON: {e}") from e
+            # Parse and validate response
+            results = parse_and_validate_search_response(gemini_text)
 
-            # Validate with Pydantic
-            validated = LLMSearchResults.model_validate(json_data)
-
-            # Convert to list of dicts
-            results = [result.model_dump(exclude_none=True) for result in validated.results]
-
-            logger.info('{"event": "parse_success", "result_count": %d}', len(results))
             return results  # Success, return results
 
         except ValueError as e:
@@ -386,7 +320,6 @@ async def search_with_tavily(
     candidate_results = await _execute_tavily_search(
         tavily_client, search_query, max_candidates, loop
     )
-    # breakpoint()
 
     if not candidate_results:
         return {

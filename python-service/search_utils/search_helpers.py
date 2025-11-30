@@ -5,14 +5,19 @@ This module provides functions to construct search queries and prompts.
 The raw prompt strings are defined in search_prompts.py.
 """
 
+import json
 import logging
 import os
 import re
-from typing import Optional
+from typing import Any, Optional, cast
 from urllib.parse import urlparse
 
+import google.generativeai as genai
+from google.generativeai.types import GenerationConfig
 from tavily import TavilyClient
 
+from models.search import LLMSearchResults
+from question_utils.question_helpers import clean_schema_for_gemini, inline_schema_defs
 from search_utils.search_prompts import (
     SEARCH_SYSTEM_PROMPT,
     SEARCH_USER_PROMPT_TEMPLATE,
@@ -284,8 +289,6 @@ def transform_candidates(tavily_results: list[dict]) -> tuple[list[dict], str]:
     Returns:
         Tuple of (candidate_payload list, candidate_json string)
     """
-    import json
-
     candidate_payload = []
     for res in tavily_results:
         candidate_payload.append(
@@ -389,6 +392,122 @@ def create_fallback_results(candidate_payload: list[dict], max_candidates: int) 
     return fallback_results
 
 
+def prepare_search_schema() -> dict[str, Any]:
+    """
+    Prepare JSON schema for Gemini structured output from LLMSearchResults model.
+
+    This function:
+    1. Generates schema from Pydantic model
+    2. Inlines $defs references (Gemini doesn't support $ref)
+    3. Removes unsupported fields (example, title, description, etc.)
+
+    Returns:
+        Prepared schema ready for Gemini API
+
+    Raises:
+        ValueError: If schema transformation fails
+    """
+    # Generate JSON schema from Pydantic model for structured output
+    json_schema = LLMSearchResults.model_json_schema()
+
+    try:
+        # Inline $defs references (Gemini doesn't support $ref)
+        json_schema = inline_schema_defs(json_schema)
+
+        # Remove fields that Gemini doesn't accept
+        # Gemini only accepts: type, properties, required, items
+        # It doesn't accept: example, title, description, minItems, maxItems, minLength, etc.
+        # Type cast: clean_schema_for_gemini returns Any, but we know it returns dict[str, Any] when given a dict
+        json_schema = cast(dict[str, Any], clean_schema_for_gemini(json_schema))
+    except Exception as e:
+        logger.error(
+            '{"event": "schema_transformation_failed", "error": "%s"}',
+            str(e).replace('"', '\\"'),
+        )
+        raise ValueError(f"Schema transformation failed: {e}") from e
+
+    return json_schema
+
+
+def call_gemini_search_api(
+    user_prompt: str,
+    system_prompt: str,
+    json_schema: dict[str, Any],
+    api_key: str,
+    model_name: str,
+) -> Any:
+    """
+    Make blocking Gemini API call with structured output for search results.
+
+    This function is designed to run in an executor (blocking I/O).
+
+    Args:
+        user_prompt: User prompt to send to Gemini
+        system_prompt: System instruction prompt
+        json_schema: Prepared JSON schema for structured output
+        api_key: Gemini API key
+        model_name: Gemini model name
+
+    Returns:
+        Raw Gemini API response object
+
+    Raises:
+        Exception: For API/network errors
+    """
+    genai.configure(api_key=api_key)
+    model = genai.GenerativeModel(
+        model_name,
+        system_instruction=system_prompt,
+    )
+
+    generation_config = GenerationConfig(
+        temperature=0.4,
+        max_output_tokens=4096,
+        response_mime_type="application/json",
+        response_schema=json_schema,
+    )
+
+    return model.generate_content(
+        user_prompt,
+        generation_config=generation_config,
+    )
+
+
+def parse_and_validate_search_response(gemini_text: str) -> list[dict]:
+    """
+    Parse JSON from Gemini response and validate with Pydantic model.
+
+    Args:
+        gemini_text: Text content extracted from Gemini response
+
+    Returns:
+        List of validated result dictionaries
+
+    Raises:
+        ValueError: If JSON parsing or validation fails
+    """
+    # With structured output, we should get pure JSON
+    try:
+        json_data = json.loads(gemini_text)
+        logger.debug('{"event": "structured_output_success", "direct_json_parse": true}')
+    except json.JSONDecodeError as e:
+        logger.warning(
+            '{"event": "structured_output_json_parse_failed", "error": "%s"}',
+            str(e).replace('"', '\\"'),
+        )
+        # Raise immediately - structured output should always return valid JSON
+        raise ValueError(f"Structured output failed to return valid JSON: {e}") from e
+
+    # Validate with Pydantic
+    validated = LLMSearchResults.model_validate(json_data)
+
+    # Convert to list of dicts
+    results = [result.model_dump(exclude_none=True) for result in validated.results]
+
+    logger.info('{"event": "parse_success", "result_count": %d}', len(results))
+    return results
+
+
 __all__ = [
     "SEARCH_SYSTEM_PROMPT",
     "SEARCH_USER_PROMPT_TEMPLATE",
@@ -403,4 +522,7 @@ __all__ = [
     "transform_candidates",
     "extract_gemini_text",
     "create_fallback_results",
+    "prepare_search_schema",
+    "call_gemini_search_api",
+    "parse_and_validate_search_response",
 ]
