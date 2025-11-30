@@ -474,17 +474,51 @@ function showResultsSummary(allResults, likedResults, dislikedResults, resultSta
       const statusClass = status === 'liked' ? 'liked' : status === 'disliked' ? 'disliked' : 'neutral';
       const statusIcon = status === 'liked' ? '❤️' : status === 'disliked' ? '👎' : '📋';
       const statusText = status === 'liked' ? 'Liked' : status === 'disliked' ? 'Disliked' : 'Not rated';
+      const imageUrl = result.image_url || '';
+      const whyMatches = result.why_matches || '';
+      const hasDetails = whyMatches.length > 0;
       
       summaryContent += `
         <div class="summary-result-item ${statusClass}">
           <div class="summary-result-number">${index + 1}</div>
           <div class="summary-result-status">${statusIcon}</div>
+          ${
+            imageUrl
+              ? `<div class="summary-result-image">
+                  <img src="${escapeHtml(imageUrl)}" alt="${escapeHtml(result.title || 'Product')}" onerror="this.style.display='none'; this.nextElementSibling.style.display='flex';">
+                  <div class="summary-image-placeholder" style="display: none;">🛍️</div>
+                </div>`
+              : `<div class="summary-result-image">
+                  <div class="summary-image-placeholder">🛍️</div>
+                </div>`
+          }
           <div class="summary-result-content">
-            <div class="summary-result-title">${escapeHtml(result.title || 'Product')}</div>
-            <div class="summary-result-status-text">${statusText}</div>
+            <div class="summary-result-header">
+              <div class="summary-result-title-wrapper">
+                <div class="summary-result-title">${escapeHtml(result.title || 'Product')}</div>
+                <div class="summary-result-status-text">${statusText}</div>
+              </div>
+              ${
+                hasDetails
+                  ? `<button class="summary-expand-btn" data-index="${index}" aria-label="Toggle details">
+                      <svg class="expand-icon" width="20" height="20" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="2">
+                        <path d="M5 7.5L10 12.5L15 7.5"/>
+                      </svg>
+                    </button>`
+                  : ''
+              }
+            </div>
             ${
               result.url
                 ? `<a href="${escapeHtml(result.url)}" target="_blank" class="summary-result-link">View Product →</a>`
+                : ''
+            }
+            ${
+              hasDetails
+                ? `<div class="summary-result-details" id="summary-details-${index}" style="display: none;">
+                    <div class="summary-details-title">Why it matches</div>
+                    <div class="summary-details-content">${escapeHtml(whyMatches)}</div>
+                  </div>`
                 : ''
             }
           </div>
@@ -517,6 +551,23 @@ function showResultsSummary(allResults, likedResults, dislikedResults, resultSta
 
   // Replace content in the same container (like question flow)
   container.innerHTML = summaryContent;
+  
+  // Add event listeners for expandable sections
+  const expandButtons = container.querySelectorAll('.summary-expand-btn');
+  expandButtons.forEach((button) => {
+    button.addEventListener('click', function () {
+      const index = this.dataset.index;
+      const detailsDiv = document.getElementById(`summary-details-${index}`);
+      const icon = this.querySelector('.expand-icon');
+      
+      if (detailsDiv) {
+        const isExpanded = detailsDiv.style.display !== 'none';
+        detailsDiv.style.display = isExpanded ? 'none' : 'block';
+        icon.style.transform = isExpanded ? 'rotate(0deg)' : 'rotate(180deg)';
+        this.setAttribute('aria-expanded', !isExpanded);
+      }
+    });
+  });
   
   // Scroll to show the summary
   const chatContainer = document.getElementById('chatContainer');
