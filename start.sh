@@ -27,10 +27,8 @@ echo -e "${BLUE}🚀 Starting Q&A Recommendation Service${NC}\n"
 if [ ! -f .env ]; then
     echo -e "${YELLOW}⚠️  Warning: .env file not found!${NC}"
     echo "Please create a .env file with required API keys:"
-    echo "  - OPENAI_API_KEY"
-    echo "  - E2B_API_KEY"
-    echo "  - EXA_API_KEY"
-    echo "  - GROQ_API_KEY"
+    echo "  - GEMINI_API_KEY"
+    echo "  - TAVILY_API_KEY"
     echo ""
     read -p "Continue anyway? (y/n) " -n 1 -r
     echo
@@ -61,12 +59,12 @@ fi
 
 echo -e "${GREEN}✅ Dependencies ready!${NC}\n"
 
-# Start Python service in background
+# Start Python service in background (with JSON logging)
 echo -e "${BLUE}🐍 Starting Python service on port 8000...${NC}"
-echo -e "${YELLOW}   Command: cd python-service && ./venv/bin/python3 -m uvicorn main:app --host 0.0.0.0 --port 8000${NC}"
+echo -e "${YELLOW}   Command: cd python-service && ./venv/bin/python3 -m uvicorn main:app --host 0.0.0.0 --port 8000 --log-config logging.json${NC}"
 cd python-service
 # Use venv's python directly
-./venv/bin/python3 -m uvicorn main:app --host 0.0.0.0 --port 8000 &
+./venv/bin/python3 -m uvicorn main:app --host 0.0.0.0 --port 8000 --log-config logging.json &
 PYTHON_PID=$!
 cd ..
 

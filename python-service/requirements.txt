@@ -16,8 +16,10 @@ pydantic==2.9.2
 # Environment variable management
 python-dotenv==1.0.0
 
-# E2B sandbox for code execution
-e2b>=0.1.0
+#
+# NOTE: E2B/Exa sandbox has been removed in favor of Tavily-only search.
+# Keeping the dependency commented for reference; can be deleted later if not needed.
+# e2b>=0.1.0
 
 # Development tools
 ruff>=0.1.0
