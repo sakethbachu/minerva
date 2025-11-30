@@ -59,7 +59,12 @@ function setupEventListeners() {
   menuItems.forEach(item => {
     item.addEventListener('click', () => {
       menuDropdown.classList.remove('show');
-      // Menu functionality can be added here in the future
+      
+      // Handle Home button
+      if (item.dataset.category === 'all' || item.textContent.trim() === 'Home') {
+        showLandingPage();
+      }
+      // Other menu items can be handled here in the future
     });
   });
 
