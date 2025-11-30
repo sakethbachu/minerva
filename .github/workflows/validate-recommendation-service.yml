@@ -1,0 +1,99 @@
+name: Validate Recommendation Service Build
+
+on:
+  pull_request:
+    branches:
+      - main
+
+jobs:
+  validation:
+    name: Run Service Health Check
+    runs-on: ubuntu-latest
+
+    services:
+      redis:
+        image: redis:latest
+        ports:
+          - 6379:6379
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      # 1. Setup Python
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.9'
+
+      # 2. Create Python venv
+      - name: Create virtual environment
+        run: |
+          cd python-service
+          python3 -m venv venv
+          ./venv/bin/pip install --upgrade pip
+          ./venv/bin/pip install -r requirements.txt
+
+      # 3. Install Node.js and dependencies
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '18'
+
+      - name: Install Node Dependencies
+        run: npm install
+
+      # 4. Build TypeScript
+      - name: Build Node App
+        run: npm run build
+
+      # 5. Start Python service
+      - name: Start Python FastAPI Service
+        run: |
+          cd python-service
+          ./venv/bin/python3 -m uvicorn main:app \
+            --host 0.0.0.0 \
+            --port 8000 --log-level info &
+          echo $! > ../python_pid.txt
+          cd ..
+
+      # 6. Wait for service
+      - name: Wait for Python startup
+        run: sleep 5
+
+      # 7. Verify Python /health endpoint
+      - name: Check Python /health
+        run: |
+          status=$(curl -s -o /dev/null -w "%{http_code}" http://localhost:8000/health || true)
+          if [ "$status" != "200" ]; then
+            echo "❌ Python service FAILED health check"
+            exit 1
+          fi
+          echo "✅ Python service healthy"
+
+      # 8. Start Express server
+      - name: Start Express Server
+        run: |
+          npm start &
+          echo $! > node_pid.txt
+
+      # 9. Wait for startup
+      - name: Wait for Node startup
+        run: sleep 5
+
+      # 10. Verify Node server
+      - name: Check Node server health endpoint
+        run: |
+          status=$(curl -s -o /dev/null -w "%{http_code}" http://localhost:3001/ || true)
+          if [ "$status" != "200" ] && [ "$status" != "302" ]; then
+            echo "❌ Node service FAILED to start"
+            exit 1
+          fi
+          echo "✅ Node service is running"
+
+      # 11. Cleanup (kill running services)
+      - name: Cleanup Services
+        if: always()
+        run: |
+          kill $(cat python_pid.txt) 2>/dev/null || true
+          kill $(cat node_pid.txt) 2>/dev/null || true
