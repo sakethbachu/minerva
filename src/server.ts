@@ -388,14 +388,18 @@ function generateQAWidget(sessionId: string): string {
             ${question.text}
           </div>
           <div class="answers-grid">
-            ${answers.map((answer: string) => `
+            ${answers
+              .map(
+                (answer: string) => `
               <button 
                 class="answer-button" 
                 onclick="selectAnswer('${question.id}', '${answer}', this)"
               >
                 ${answer}
               </button>
-            `).join("")}
+            `
+              )
+              .join("")}
           </div>
         </div>
       `;
