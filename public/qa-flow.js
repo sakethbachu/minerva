@@ -236,9 +236,7 @@ function handleAnswersSubmitted(sessionId, answers, result) {
     } else {
       addSearchResults(searchResults, null, sessionId);
       updateStatus('Search completed', 'success');
-
-      // Show results in overlay
-      showResultsOverlay(searchResults, sessionId);
+      // Flashcards are displayed directly in chat via addSearchResults -> displayResultFlashcards
     }
   } else {
     const errorMessage = result?.error || result?.message || 'Search failed';
@@ -322,12 +320,13 @@ function displayResultFlashcards(searchResults, error = null, sessionId = null) 
   let currentResultIndex = 0;
   const likedResults = [];
   const dislikedResults = [];
+  const resultStatusMap = new Map(); // Track which results were liked/disliked
 
   // Function to show current result
   function showResult(index) {
     if (index >= searchResults.length) {
-      // All results shown, show summary
-      showResultsSummary(likedResults, dislikedResults);
+      // All results shown, show summary in the same container
+      showResultsSummary(searchResults, likedResults, dislikedResults, resultStatusMap, container);
       return;
     }
 
@@ -337,6 +336,7 @@ function displayResultFlashcards(searchResults, error = null, sessionId = null) 
     const title = result.title || 'Product Recommendation';
     const description = result.description || 'No description available';
     const url = result.url || '';
+    const whyMatches = result.why_matches || '';
 
     let hostname = '';
     try {
@@ -375,6 +375,16 @@ function displayResultFlashcards(searchResults, error = null, sessionId = null) 
                 .map((h) => `<li>${escapeHtml(h)}</li>`)
                 .join('')}
             </ul>
+          `
+              : ''
+          }
+          ${
+            whyMatches
+              ? `
+            <div class="result-flashcard-why-matches">
+              <div class="result-flashcard-why-matches-title">Why it matches</div>
+              <div class="result-flashcard-why-matches-content">${escapeHtml(whyMatches)}</div>
+            </div>
           `
               : ''
           }
@@ -424,6 +434,7 @@ function displayResultFlashcards(searchResults, error = null, sessionId = null) 
 
     if (action === 'like') {
       likedResults.push(result);
+      resultStatusMap.set(resultIndex, 'liked');
       button.classList.add('liked');
       button.innerHTML = `
         <svg width="24" height="24" viewBox="0 0 24 24" fill="currentColor">
@@ -433,6 +444,7 @@ function displayResultFlashcards(searchResults, error = null, sessionId = null) 
       `;
     } else {
       dislikedResults.push(result);
+      resultStatusMap.set(resultIndex, 'disliked');
       button.classList.add('disliked');
     }
 
@@ -449,22 +461,27 @@ function displayResultFlashcards(searchResults, error = null, sessionId = null) 
 }
 
 // Show results summary
-function showResultsSummary(likedResults, dislikedResults) {
-  const chatContainer = document.getElementById('chatContainer');
-  const messageDiv = document.createElement('div');
-  messageDiv.className = 'message assistant';
-
+function showResultsSummary(allResults, likedResults, dislikedResults, resultStatusMap, container) {
   let summaryContent = '<div class="results-summary">';
-  summaryContent += '<h3>✨ Your Recommendations</h3>';
+  summaryContent += '<h3>✨ All Recommendations</h3>';
 
-  if (likedResults.length > 0) {
-    summaryContent += `<div class="liked-section"><h4>❤️ Liked (${likedResults.length})</h4>`;
-    likedResults.forEach((result, index) => {
+  // Show all results with their status
+  if (allResults && allResults.length > 0) {
+    summaryContent += `<div class="all-results-section">`;
+    
+    allResults.forEach((result, index) => {
+      const status = resultStatusMap.get(index) || 'neutral';
+      const statusClass = status === 'liked' ? 'liked' : status === 'disliked' ? 'disliked' : 'neutral';
+      const statusIcon = status === 'liked' ? '❤️' : status === 'disliked' ? '👎' : '📋';
+      const statusText = status === 'liked' ? 'Liked' : status === 'disliked' ? 'Disliked' : 'Not rated';
+      
       summaryContent += `
-        <div class="summary-result-item">
+        <div class="summary-result-item ${statusClass}">
           <div class="summary-result-number">${index + 1}</div>
+          <div class="summary-result-status">${statusIcon}</div>
           <div class="summary-result-content">
             <div class="summary-result-title">${escapeHtml(result.title || 'Product')}</div>
+            <div class="summary-result-status-text">${statusText}</div>
             ${
               result.url
                 ? `<a href="${escapeHtml(result.url)}" target="_blank" class="summary-result-link">View Product →</a>`
@@ -475,18 +492,37 @@ function showResultsSummary(likedResults, dislikedResults) {
       `;
     });
     summaryContent += '</div>';
+
+    // Show summary stats
+    const likedCount = likedResults.length;
+    const dislikedCount = dislikedResults.length;
+    const neutralCount = allResults.length - likedCount - dislikedCount;
+    
+    if (likedCount > 0 || dislikedCount > 0 || neutralCount > 0) {
+      summaryContent += '<div class="summary-stats">';
+      if (likedCount > 0) {
+        summaryContent += `<span class="stat-item stat-liked">❤️ ${likedCount} Liked</span>`;
+      }
+      if (dislikedCount > 0) {
+        summaryContent += `<span class="stat-item stat-disliked">👎 ${dislikedCount} Disliked</span>`;
+      }
+      if (neutralCount > 0) {
+        summaryContent += `<span class="stat-item stat-neutral">📋 ${neutralCount} Not rated</span>`;
+      }
+      summaryContent += '</div>';
+    }
   }
 
   summaryContent += '</div>';
 
-  messageDiv.innerHTML = `
-    <div class="avatar assistant">AI</div>
-    <div class="message-content">
-      ${summaryContent}
-    </div>
-  `;
-  chatContainer.appendChild(messageDiv);
-  chatContainer.scrollTop = chatContainer.scrollHeight;
+  // Replace content in the same container (like question flow)
+  container.innerHTML = summaryContent;
+  
+  // Scroll to show the summary
+  const chatContainer = document.getElementById('chatContainer');
+  if (chatContainer) {
+    chatContainer.scrollTop = chatContainer.scrollHeight;
+  }
 }
 
 // Add search results to chat (legacy - keeping for compatibility)
