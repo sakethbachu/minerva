@@ -9,3 +9,10 @@ restart.sh
 
 # Python virtual environment
 python-service/venv/
+
+# Python cache files
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
