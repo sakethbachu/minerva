@@ -17,6 +17,11 @@ from pydantic import BaseModel, Field  # noqa: E402
 from models.search import SearchRequest, SearchResponse  # noqa: E402
 from services.question_generator import generate_questions_with_retry  # noqa: E402
 from services.search_service import search_with_tavily  # noqa: E402
+from services.supabase_client import (  # noqa: E402
+    get_supabase_client,
+    is_supabase_available,
+    test_connection,
+)
 
 # Load environment variables from .env file in project root (one level up)
 env_path = Path(__file__).parent.parent / ".env"
@@ -49,13 +54,31 @@ app.add_middleware(
 )
 
 
+# Initialize Supabase client on startup
+@app.on_event("startup")
+async def startup_event():
+    """Initialize Supabase client when the app starts"""
+    logger.info("Initializing Supabase client...")
+    client = get_supabase_client()
+    if client:
+        # Test the connection
+        if test_connection():
+            logger.info("✅ Supabase client ready")
+        else:
+            logger.warning("⚠️  Supabase client initialized but connection test failed")
+    else:
+        logger.warning("⚠️  Supabase client not available (graceful degradation enabled)")
+
+
 @app.get("/health")
 async def health_check():
     """Health check endpoint"""
+    supabase_status = "available" if is_supabase_available() else "unavailable"
     return {
         "status": "ok",
         "message": "Question Generator Service is running",
         "service": "python-fastapi",
+        "supabase": supabase_status,
     }
 
 
@@ -141,11 +164,21 @@ async def search_endpoint(request: SearchRequest):
         SearchResponse with success status, results, and optional error
     """
     try:
+        # Convert user_profile to dict if present
+        user_profile_dict = None
+        if request.user_profile:
+            user_profile_dict = {
+                "age": request.user_profile.age,
+                "gender": request.user_profile.gender.value,  # Get enum value
+                "lives_in_us": request.user_profile.lives_in_us,
+            }
+
         result = await search_with_tavily(
             user_query=request.query,
             user_answers=request.answers,
             questions=request.questions,
             user_id=request.user_id,
+            user_profile=user_profile_dict,
         )
 
         # Return formatted response

@@ -295,6 +295,7 @@ async def search_with_tavily(
     questions: list[dict],
     user_id: Optional[str] = None,
     max_candidates: int = 8,
+    user_profile: Optional[dict] = None,
 ) -> dict:
     """
     Search using Tavily (ecommerce-only) and let Gemini synthesize results.
@@ -313,7 +314,7 @@ async def search_with_tavily(
     loop = asyncio.get_running_loop()
 
     # 2. Build search context
-    prompt = build_search_prompt(user_query, user_answers, questions, user_id)
+    prompt = build_search_prompt(user_query, user_answers, questions, user_id, user_profile)
     search_query = construct_search_query(user_query, user_answers, questions)
 
     # 3. Execute Tavily search

@@ -24,9 +24,9 @@ const typewriterMessages = [
 ];
 
 // Initialize the app
-function init() {
+async function init() {
   // Check authentication first
-  checkAuth();
+  await checkAuth();
   
   if (!isAuthenticated) {
     return; // Will redirect to login page
@@ -54,8 +54,8 @@ function setupEventListeners() {
     }
   });
 
-  // Menu items
-  const menuItems = document.querySelectorAll('.menu-item');
+  // Menu items (excluding logout button)
+  const menuItems = document.querySelectorAll('.menu-item:not(#logoutBtn)');
   menuItems.forEach(item => {
     item.addEventListener('click', () => {
       menuDropdown.classList.remove('show');
@@ -63,16 +63,51 @@ function setupEventListeners() {
     });
   });
 
-  // Logout button
+  // Logout button (in hamburger menu)
   const logoutBtn = document.getElementById('logoutBtn');
-  if (logoutBtn) {
-    logoutBtn.addEventListener('click', () => {
-      // Clear authentication
-      localStorage.removeItem('authToken');
-      localStorage.removeItem('rememberMe');
-      // Redirect to login page
+  
+  // Function to handle logout
+  async function handleLogout() {
+    // Close menu first
+    menuDropdown.classList.remove('show');
+      try {
+        // Ensure Supabase is loaded
+        if (!window.supabase && window.SUPABASE_CONFIG) {
+          // Load Supabase from CDN if not already loaded
+          const script = document.createElement('script');
+          script.src = 'https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.min.js';
+          await new Promise((resolve) => {
+            script.onload = resolve;
+            document.head.appendChild(script);
+          });
+        }
+
+        // Sign out from Supabase
+        if (window.supabase && window.SUPABASE_CONFIG) {
+          const supabase = window.supabase.createClient(
+            window.SUPABASE_CONFIG.url,
+            window.SUPABASE_CONFIG.anonKey
+          );
+          const { error } = await supabase.auth.signOut();
+          if (error) {
+            console.error('Error signing out:', error);
+          }
+        }
+      } catch (error) {
+        console.error('Error during logout:', error);
+      }
+      
+      // Clear any local storage
+      localStorage.clear();
+      sessionStorage.clear();
+      
+      // Redirect to login
       window.location.href = '/login.html';
-    });
+  }
+  
+  // Attach logout handler to menu button
+  if (logoutBtn) {
+    logoutBtn.addEventListener('click', handleLogout);
   }
 
   // Get Started button (landing page)
@@ -230,35 +265,45 @@ function updateStatus(text, type = 'default') {
 
 // Handle Get Started button (from landing page)
 async function handleGetStarted() {
-  const queryInput = document.getElementById('queryInput');
-  const query = queryInput.value.trim();
-  
-  if (!query) {
-    // Show visual feedback for empty input
-    queryInput.style.borderColor = '#ff3b30';
-    queryInput.placeholder = 'Please enter a question or request...';
-    setTimeout(() => {
-      queryInput.style.borderColor = '';
-      queryInput.placeholder = 'Ask for recommendations... (e.g., \'I want running shoes for marathon training\')';
-    }, 2000);
-    return;
+  try {
+    console.log('handleGetStarted called');
+    const queryInput = document.getElementById('queryInput');
+    const query = queryInput.value.trim();
+    
+    console.log('Query:', query);
+    
+    if (!query) {
+      // Show visual feedback for empty input
+      queryInput.style.borderColor = '#ff3b30';
+      queryInput.placeholder = 'Please enter a question or request...';
+      setTimeout(() => {
+        queryInput.style.borderColor = '';
+        queryInput.placeholder = 'Ask for recommendations... (e.g., \'I want running shoes for marathon training\')';
+      }, 2000);
+      return;
+    }
+    
+    // Show chat interface
+    showChatInterface();
+    
+    // Add user message
+    addMessage(query, true);
+    
+    // Clear input
+    queryInput.value = '';
+    
+    // Process query
+    console.log('Calling processQuery with:', query);
+    await processQuery(query);
+  } catch (error) {
+    console.error('Error in handleGetStarted:', error);
+    addError(`Failed to process request: ${error.message}`, true);
   }
-  
-  // Show chat interface
-  showChatInterface();
-  
-  // Add user message
-  addMessage(query, true);
-  
-  // Clear input
-  queryInput.value = '';
-  
-  // Process query
-  await processQuery(query);
 }
 
 // Process query (generate questions)
 async function processQuery(query) {
+  console.log('processQuery called with:', query);
   lastQuery = query;
   updateStatus('Generating questions...', 'loading');
   
@@ -272,13 +317,47 @@ async function processQuery(query) {
   const loadingMessage = addLoadingMessage('Generating personalized questions for you...');
   
   try {
+    // Get auth token and add to headers
+    let headers = {
+      'Content-Type': 'application/json',
+    };
+    
+    // Add Authorization header if authenticated
+    if (window.supabase && window.SUPABASE_CONFIG) {
+      try {
+        console.log('Getting auth token...');
+        const supabase = window.supabase.createClient(
+          window.SUPABASE_CONFIG.url,
+          window.SUPABASE_CONFIG.anonKey
+        );
+        const { data: { session }, error: sessionError } = await supabase.auth.getSession();
+        if (sessionError) {
+          console.error('Error getting session:', sessionError);
+        }
+        if (session?.access_token) {
+          headers['Authorization'] = `Bearer ${session.access_token}`;
+          console.log('Auth token added to headers');
+        } else {
+          console.warn('No auth token available');
+        }
+      } catch (error) {
+        console.error('Error getting auth token:', error);
+      }
+    } else {
+      console.warn('Supabase not available');
+    }
+    
+    console.log('Making API request to:', `${API_BASE}/api/questions`);
+    console.log('Headers:', headers);
+    console.log('Body:', { query });
+    
     const response = await fetch(`${API_BASE}/api/questions`, {
       method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-      },
+      headers: headers,
       body: JSON.stringify({ query })
     });
+    
+    console.log('Response status:', response.status, response.statusText);
 
     if (!response.ok) {
       const errorData = await response.json().catch(() => ({}));
@@ -492,18 +571,75 @@ window.addEventListener('beforeunload', () => {
   stopTypewriter();
 });
 
-// Check if user is already logged in (from localStorage)
-function checkAuth() {
-  const authToken = localStorage.getItem('authToken');
-  
-  // Simply check if auth token exists
-  if (!authToken) {
-    // User is not logged in, redirect to login page
-    window.location.href = '/login.html';
-    return;
+// Check if user is already logged in (using Supabase)
+async function checkAuth() {
+  // Load Supabase config and client
+  if (!window.SUPABASE_CONFIG) {
+    // If config not loaded, try to load it
+    const script = document.createElement('script');
+    script.src = '/supabase-config.js';
+    await new Promise((resolve) => {
+      script.onload = resolve;
+      document.head.appendChild(script);
+    });
   }
-  
-  isAuthenticated = true;
+
+  if (!window.supabase) {
+    // Load Supabase from CDN
+    const script = document.createElement('script');
+    script.src = 'https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.min.js';
+    await new Promise((resolve) => {
+      script.onload = resolve;
+      document.head.appendChild(script);
+    });
+  }
+
+  const supabase = window.supabase.createClient(
+    window.SUPABASE_CONFIG.url,
+    window.SUPABASE_CONFIG.anonKey
+  );
+
+  try {
+    const { data: { session }, error } = await supabase.auth.getSession();
+    
+    if (error) {
+      console.error('Error getting session:', error);
+      window.location.href = '/login.html';
+      return;
+    }
+
+    if (!session) {
+      // User is not logged in, redirect to login page
+      window.location.href = '/login.html';
+      return;
+    }
+
+    // Check if user has a profile
+    const { data: profile, error: profileError } = await supabase
+      .from('user_profiles')
+      .select('id')
+      .eq('id', session.user.id)
+      .single();
+
+    if (profileError && profileError.code !== 'PGRST116') {
+      // PGRST116 means no rows found
+      console.error('Error checking profile:', profileError);
+      window.location.href = '/login.html';
+      return;
+    }
+
+    if (!profile) {
+      // User doesn't have profile, redirect to profile page
+      window.location.href = '/profile.html';
+      return;
+    }
+
+    // User is authenticated and has profile
+    isAuthenticated = true;
+  } catch (error) {
+    console.error('Error in checkAuth:', error);
+    window.location.href = '/login.html';
+  }
 }
 
 // Initialize app when DOM is loaded

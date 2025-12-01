@@ -182,6 +182,31 @@ body::after {
   margin: 8px 0;
 }
 
+/* Top Logout Button */
+.logout-button-top {
+  padding: 8px 16px;
+  background: var(--claude-surface);
+  border: 2px solid var(--claude-border);
+  border-radius: 8px;
+  cursor: pointer;
+  font-size: 14px;
+  font-weight: 500;
+  color: var(--claude-text);
+  transition: all 0.2s ease;
+  font-family: inherit;
+  white-space: nowrap;
+}
+
+.logout-button-top:hover {
+  border-color: var(--claude-primary);
+  background: var(--claude-hover);
+  color: var(--claude-primary);
+}
+
+.logout-button-top:active {
+  transform: scale(0.98);
+}
+
 #logoutBtn {
   color: var(--claude-emphasis);
 }
@@ -1740,17 +1765,6 @@ body::after {
   accent-color: var(--claude-primary);
 }
 
-.forgot-password {
-  color: var(--claude-secondary);
-  text-decoration: none;
-  font-weight: 500;
-  transition: color 0.2s ease;
-}
-
-.forgot-password:hover {
-  color: var(--claude-primary);
-  text-decoration: underline;
-}
 
 .login-btn {
   padding: 14px 24px;
@@ -1784,6 +1798,104 @@ body::after {
   box-shadow: none;
 }
 
+/* Google Login Button */
+.google-login-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 100%;
+  padding: 14px 24px;
+  background: white;
+  color: var(--claude-text);
+  border: 2px solid var(--claude-border);
+  border-radius: 12px;
+  font-size: 16px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.2s ease;
+  font-family: inherit;
+  box-shadow: 0 2px 10px rgba(0, 0, 0, 0.1);
+  margin-top: 8px;
+}
+
+.google-login-btn:hover:not(:disabled) {
+  border-color: var(--claude-primary);
+  background: var(--claude-hover);
+  transform: translateY(-1px);
+  box-shadow: 0 4px 15px rgba(218, 119, 86, 0.2);
+}
+
+.google-login-btn:active {
+  transform: translateY(0);
+}
+
+.google-login-btn:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+  transform: none;
+}
+
+/* Profile Form Styles */
+.required {
+  color: var(--claude-emphasis);
+  margin-left: 2px;
+}
+
+.field-error {
+  display: none;
+  color: var(--claude-emphasis);
+  font-size: 12px;
+  margin-top: 4px;
+  font-weight: 500;
+}
+
+.form-group input.error,
+.form-group input:invalid:not(:focus):not(:placeholder-shown) {
+  border-color: var(--claude-emphasis);
+}
+
+.radio-group {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  margin-top: 8px;
+}
+
+.radio-label {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  cursor: pointer;
+  padding: 10px 12px;
+  border: 2px solid var(--claude-border);
+  border-radius: 8px;
+  transition: all 0.2s ease;
+  background: var(--claude-surface);
+}
+
+.radio-label:hover {
+  border-color: var(--claude-primary);
+  background: var(--claude-hover);
+}
+
+.radio-label input[type="radio"] {
+  width: 18px;
+  height: 18px;
+  margin: 0;
+  cursor: pointer;
+  accent-color: var(--claude-primary);
+}
+
+.radio-label input[type="radio"]:checked + span {
+  font-weight: 600;
+  color: var(--claude-primary);
+}
+
+.radio-label:has(input[type="radio"]:checked) {
+  border-color: var(--claude-primary);
+  background: rgba(218, 119, 86, 0.05);
+}
+
 .login-divider {
   display: flex;
   align-items: center;
@@ -1804,28 +1916,6 @@ body::after {
   padding: 0 16px;
 }
 
-.signup-btn {
-  padding: 14px 24px;
-  background: transparent;
-  color: var(--claude-primary);
-  border: 2px solid var(--claude-primary);
-  border-radius: 12px;
-  font-size: 16px;
-  font-weight: 600;
-  cursor: pointer;
-  transition: all 0.2s ease;
-  font-family: inherit;
-}
-
-.signup-btn:hover {
-  background: var(--claude-primary);
-  color: white;
-  transform: translateY(-1px);
-}
-
-.signup-btn:active {
-  transform: translateY(0);
-}
 
 .login-error {
   margin-top: 16px;

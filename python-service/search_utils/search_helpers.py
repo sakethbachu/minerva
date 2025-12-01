@@ -77,6 +77,7 @@ def build_search_prompt(
     user_answers: dict[str, str],
     questions: list[dict],
     user_id: Optional[str] = None,
+    user_profile: Optional[dict] = None,
 ) -> str:
     """
     Build a context-aware search prompt from user query and answers.
@@ -86,6 +87,7 @@ def build_search_prompt(
         user_answers: Dictionary of question_id -> answer (e.g., {"q1": "Casual", "q2": "$50"})
         questions: List of question objects with id, text, and answers
         user_id: Optional user ID for personalized queries
+        user_profile: Optional user profile dict with age, gender, lives_in_us
 
     Returns:
         Formatted prompt string for search synthesis
@@ -98,8 +100,19 @@ def build_search_prompt(
         [f"- {questions_map.get(q_id, q_id)}: {answer}" for q_id, answer in user_answers.items()]
     )
 
+    # Add demographics section if profile exists
+    profile_section = ""
+    if user_profile:
+        location = "United States" if user_profile.get("lives_in_us") else "International"
+        profile_section = f"""User Profile:
+- Age: {user_profile.get("age")}
+- Gender: {user_profile.get("gender")}
+- Location: {location}
+
+"""
+
     # Base prompt about user preferences
-    base_prompt = f"""User wants: {user_query}
+    base_prompt = f"""{profile_section}User wants: {user_query}
 
 User Preferences:
 {answers_text}
@@ -118,6 +131,10 @@ Please search for relevant products and provide recommendations based on these p
         base_prompt += "\nExclude items the user has already purchased or watched."
         if user_id:
             base_prompt += f"\nUser ID: {user_id} (check purchase/watch history if available)"
+
+    # Add personalization instruction if profile exists
+    if user_profile:
+        base_prompt += "\nConsider the user's age, gender, and location when recommending products."
 
     base_prompt += (
         "\n\nProvide a clear, structured list of recommendations with titles, descriptions, "

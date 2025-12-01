@@ -188,11 +188,30 @@ async function submitFlashcardAnswers(sessionId, answers) {
   updateStatus('Submitting answers...', 'loading');
 
   try {
+    // Get auth token and add to headers
+    let headers = {
+      'Content-Type': 'application/json',
+    };
+    
+    // Add Authorization header if authenticated
+    if (window.supabase && window.SUPABASE_CONFIG) {
+      try {
+        const supabase = window.supabase.createClient(
+          window.SUPABASE_CONFIG.url,
+          window.SUPABASE_CONFIG.anonKey
+        );
+        const { data: { session } } = await supabase.auth.getSession();
+        if (session?.access_token) {
+          headers['Authorization'] = `Bearer ${session.access_token}`;
+        }
+      } catch (error) {
+        console.error('Error getting auth token:', error);
+      }
+    }
+    
     const response = await fetch(`${API_BASE}/submit-answers`, {
       method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-      },
+      headers: headers,
       body: JSON.stringify({
         sessionId,
         answers,
