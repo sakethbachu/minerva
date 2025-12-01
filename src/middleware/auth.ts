@@ -1,3 +1,4 @@
+/// <reference types="../types/express.d.ts" />
 import { Request, Response, NextFunction } from "express";
 import { createClient, SupabaseClient } from "@supabase/supabase-js";
 
