@@ -1,9 +1,19 @@
+/// <reference types="./types/express.d.ts" />
 import "dotenv/config";
 import express from "express";
 import { fileURLToPath } from "url";
 import { dirname, join } from "path";
 import { generateQuestions } from "./services/questionGenerator.js";
 import { Question } from "./types/question.types.js";
+import { requireAuth, getUserId } from "./middleware/auth.js";
+import {
+  createSession,
+  getSession,
+  updateSessionAnswers,
+  SessionData,
+} from "./services/sessionService.js";
+import { saveSearchHistory } from "./services/searchHistoryService.js";
+import { getUserProfile } from "./services/userProfileService.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -24,7 +34,7 @@ app.use((req, res, next) => {
 app.use((req, res, next) => {
   res.header("Access-Control-Allow-Origin", "*");
   res.header("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
-  res.header("Access-Control-Allow-Headers", "Content-Type, Accept");
+  res.header("Access-Control-Allow-Headers", "Content-Type, Accept, Authorization");
   if (req.method === "OPTIONS") {
     return res.sendStatus(200);
   }
@@ -39,8 +49,8 @@ app.get("/health", (req, res) => {
   res.json({ status: "ok", message: "Q&A Agent Server is running" });
 });
 
-// REST API endpoint to generate questions
-app.post("/api/questions", async (req, res) => {
+// REST API endpoint to generate questions (requires authentication)
+app.post("/api/questions", requireAuth, async (req, res) => {
   try {
     const { query } = req.body;
 
@@ -48,19 +58,28 @@ app.post("/api/questions", async (req, res) => {
       return res.status(400).json({ error: "Invalid query. Expected a string." });
     }
 
+    // Get user_id from authenticated request
+    const userId = getUserId(req);
+    if (!userId) {
+      return res.status(401).json({ error: "User ID not found in request" });
+    }
+
     const sessionId = generateSessionId();
-    console.log(`New session: ${sessionId} - Query: "${query}"`);
+    console.log(`New session: ${sessionId} - Query: "${query}" - User: ${userId}`);
 
     // Generate questions
     const questions = await generateQuestions(query, NUM_QUESTIONS, NUM_ANSWERS);
 
-    // Create session with questions
-    userSessions.set(sessionId, {
-      currentQuestionIndex: 0,
-      answers: {},
-      originalQuery: query,
-      questions: questions,
-    });
+    // Create session in Supabase database
+    const sessionCreated = await createSession(userId, sessionId, query, questions);
+
+    if (!sessionCreated) {
+      console.error(`Failed to create session ${sessionId} in database`);
+      return res.status(500).json({
+        success: false,
+        error: "Failed to create session. Please try again.",
+      });
+    }
 
     console.log(`Session ${sessionId} created with ${questions.length} questions for "${query}"`);
 
@@ -80,46 +99,54 @@ app.post("/api/questions", async (req, res) => {
 });
 
 // REST API endpoint to get widget HTML for a session
-app.get("/api/widget/:sessionId", (req, res) => {
+app.get("/api/widget/:sessionId", async (req, res) => {
   const { sessionId } = req.params;
 
-  if (!sessionId || !userSessions.has(sessionId)) {
-    return res.status(404).json({ error: "Session not found" });
+  if (!sessionId) {
+    return res.status(400).json({ error: "Session ID is required" });
   }
 
-  const session = userSessions.get(sessionId);
+  const session = await getSession(sessionId);
   if (!session) {
-    return res.status(404).json({ error: "Session not found" });
+    return res.status(404).json({ error: "Session not found or expired" });
   }
 
-  const widgetHtml = generateQAWidget(sessionId);
+  const widgetHtml = generateQAWidget(sessionId, session);
 
   res.setHeader("Content-Type", "text/html");
   res.send(widgetHtml);
 });
 
-// REST API endpoint to process answers and generate recommendations
-app.post("/api/answers", (req, res) => {
+// REST API endpoint to process answers and generate recommendations (requires authentication)
+app.post("/api/answers", requireAuth, async (req, res) => {
   try {
     const { sessionId, answers } = req.body;
 
-    if (!sessionId || !userSessions.has(sessionId)) {
-      return res.status(404).json({ error: "Session not found" });
+    if (!sessionId) {
+      return res.status(400).json({ error: "Session ID is required" });
     }
 
     if (!answers || typeof answers !== "object") {
       return res.status(400).json({ error: "Invalid answers format" });
     }
 
-    const session = userSessions.get(sessionId)!;
+    // Get session from database
+    const session = await getSession(sessionId);
+    if (!session) {
+      return res.status(404).json({ error: "Session not found or expired" });
+    }
 
-    // Store answers in session
+    // Update answers in session
+    const updatedAnswers: Record<string, string> = { ...session.answers };
     Object.entries(answers).forEach(([question, answer]) => {
-      const questionId = session.questions.find((q) => q.text === question)?.id;
+      const questionId = session.questions.find((q: Question) => q.text === question)?.id;
       if (questionId) {
-        session.answers[questionId] = answer as string;
+        updatedAnswers[questionId] = answer as string;
       }
     });
+
+    // Save updated answers to database
+    await updateSessionAnswers(sessionId, updatedAnswers);
 
     console.log(`Session ${sessionId} - Answers processed`);
 
@@ -146,7 +173,7 @@ app.post("/api/answers", (req, res) => {
   }
 });
 
-app.post("/submit-answers", async (req, res) => {
+app.post("/submit-answers", requireAuth, async (req, res) => {
   try {
     const { sessionId, answers } = req.body;
 
@@ -154,24 +181,52 @@ app.post("/submit-answers", async (req, res) => {
       return res.status(400).json({ error: "Invalid answers format" });
     }
 
-    if (!sessionId || !userSessions.has(sessionId)) {
-      return res.status(404).json({ error: "Session not found" });
+    if (!sessionId) {
+      return res.status(400).json({ error: "Session ID is required" });
     }
 
-    const session = userSessions.get(sessionId)!;
+    // Get session from database
+    const session = await getSession(sessionId);
+    if (!session) {
+      return res.status(404).json({ error: "Session not found or expired" });
+    }
 
     // Store answers in session (answers now come with question IDs as keys)
+    const updatedAnswers: Record<string, string> = { ...session.answers };
     Object.entries(answers).forEach(([questionId, answer]) => {
       // Validate that questionId exists in session.questions
       const questionExists = session.questions.find((q) => q.id === questionId);
       if (questionExists) {
-        session.answers[questionId] = answer as string;
+        updatedAnswers[questionId] = answer as string;
       } else {
         console.warn(`Question ID ${questionId} not found in session questions`);
       }
     });
 
-    console.log(`Session ${sessionId} - Answers received:`, session.answers);
+    // Save updated answers to database
+    await updateSessionAnswers(sessionId, updatedAnswers);
+
+    // Get user_id from authenticated request
+    const userId = getUserId(req);
+    console.log(`Session ${sessionId} - Answers received from user: ${userId || "unknown"}`);
+
+    // Fetch user profile for personalization
+    let userProfile = null;
+    if (userId) {
+      try {
+        const profile = await getUserProfile(userId);
+        if (profile) {
+          userProfile = {
+            age: profile.age,
+            gender: profile.gender,
+            lives_in_us: profile.lives_in_us,
+          };
+        }
+      } catch (error) {
+        console.error("Error fetching user profile:", error);
+        // Continue without profile (graceful degradation)
+      }
+    }
 
     // Call Python search service with questions array
     try {
@@ -182,9 +237,10 @@ app.post("/submit-answers", async (req, res) => {
         },
         body: JSON.stringify({
           query: session.originalQuery,
-          answers: session.answers, // {"q1": "Casual", "q2": "$50"}
+          answers: updatedAnswers, // Use updated answers
           questions: session.questions, // Full question objects
-          user_id: null, // TODO: Add user authentication
+          user_id: userId, // Extract from authenticated request
+          user_profile: userProfile, // User demographics for personalization
         }),
       });
 
@@ -196,6 +252,19 @@ app.post("/submit-answers", async (req, res) => {
 
       if (!searchResponse.ok || !searchResult.success) {
         console.error("Search service error:", searchResult.error);
+
+        // Save search history with failure status
+        if (userId) {
+          await saveSearchHistory({
+            user_id: userId,
+            query: session.originalQuery,
+            answers: updatedAnswers,
+            questions: session.questions,
+            failed: true,
+            error_message: searchResult.error || "Search service failed",
+          });
+        }
+
         return res.status(500).json({
           success: false,
           error: searchResult.error || "Search service failed",
@@ -208,6 +277,18 @@ app.post("/submit-answers", async (req, res) => {
         searchResult.results?.length || 0
       );
 
+      // Save successful search history
+      if (userId) {
+        await saveSearchHistory({
+          user_id: userId,
+          query: session.originalQuery,
+          answers: updatedAnswers,
+          questions: session.questions,
+          search_results: searchResult.results || [],
+          failed: false,
+        });
+      }
+
       res.json({
         success: true,
         message: "Answers received and search completed!",
@@ -216,6 +297,20 @@ app.post("/submit-answers", async (req, res) => {
       });
     } catch (searchError) {
       console.error("Error calling search service:", searchError);
+
+      // Save search history with failure status
+      if (userId) {
+        await saveSearchHistory({
+          user_id: userId,
+          query: session.originalQuery,
+          answers: updatedAnswers,
+          questions: session.questions,
+          failed: true,
+          error_message:
+            searchError instanceof Error ? searchError.message : "Search service unavailable",
+        });
+      }
+
       return res.status(500).json({
         success: false,
         error: "Failed to call search service",
@@ -228,17 +323,10 @@ app.post("/submit-answers", async (req, res) => {
   }
 });
 
-interface SessionData {
-  currentQuestionIndex: number;
-  answers: Record<string, string>;
-  originalQuery: string;
-  questions: Question[];
-}
+// SessionData interface is imported from sessionService
+// Removed in-memory userSessions Map - now using Supabase database
 
-const userSessions = new Map<string, SessionData>();
-
-function generateQAWidget(sessionId: string): string {
-  const session = userSessions.get(sessionId)!;
+function generateQAWidget(sessionId: string, session: SessionData): string {
   const questions = session.questions;
 
   return `<!DOCTYPE html>
@@ -388,14 +476,18 @@ function generateQAWidget(sessionId: string): string {
             ${question.text}
           </div>
           <div class="answers-grid">
-            ${answers.map((answer: string) => `
+            ${answers
+              .map(
+                (answer: string) => `
               <button 
                 class="answer-button" 
                 onclick="selectAnswer('${question.id}', '${answer}', this)"
               >
                 ${answer}
               </button>
-            `).join("")}
+            `
+              )
+              .join("")}
           </div>
         </div>
       `;

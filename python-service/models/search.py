@@ -3,9 +3,33 @@ Pydantic models for search request and response types.
 Used for validating search API input/output.
 """
 
+from enum import Enum
 from typing import Any, Optional
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
+
+
+class Gender(str, Enum):
+    """User gender enum matching database values"""
+
+    MALE = "Male"
+    FEMALE = "Female"
+    OTHER = "Other"
+
+
+class UserProfile(BaseModel):
+    """User profile model with validation"""
+
+    age: int = Field(..., ge=1, le=150, description="User age (1-150)")
+    gender: Gender = Field(..., description="User gender")
+    lives_in_us: bool = Field(..., description="Whether user lives in US")
+
+    @field_validator("age")
+    @classmethod
+    def validate_age(cls, v: int) -> int:
+        if not (1 <= v <= 150):
+            raise ValueError("Age must be between 1 and 150")
+        return v
 
 
 class SearchRequest(BaseModel):
@@ -24,6 +48,10 @@ class SearchRequest(BaseModel):
     )
     user_id: Optional[str] = Field(
         default=None, description="Optional user ID for personalized queries"
+    )
+    user_profile: Optional[UserProfile] = Field(
+        default=None,
+        description="User profile for personalization (age, gender, location)",
     )
 
     class Config:
@@ -46,6 +74,11 @@ class SearchRequest(BaseModel):
                     },
                 ],
                 "user_id": "user_123",
+                "user_profile": {
+                    "age": 25,
+                    "gender": "Male",
+                    "lives_in_us": True,
+                },
             }
         }
 

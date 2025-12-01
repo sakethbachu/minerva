@@ -1,0 +1,93 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Complete Your Profile - Q&A Recommendation Agent</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <div class="app-container">
+    <!-- Profile Page -->
+    <div class="login-page">
+      <div class="login-container">
+        <div class="login-header">
+          <h1>Complete Your Profile</h1>
+          <p>We need a few details to personalize your experience</p>
+        </div>
+        
+        <form class="login-form" id="profileForm">
+          <!-- Name Field -->
+          <div class="form-group">
+            <label for="name">Name <span class="required">*</span></label>
+            <input 
+              type="text" 
+              id="name" 
+              name="name" 
+              placeholder="Enter your name"
+              required
+              autocomplete="name"
+            >
+            <div class="field-error" id="nameError"></div>
+          </div>
+          
+          <!-- Age Field -->
+          <div class="form-group">
+            <label for="age">Age <span class="required">*</span></label>
+            <input 
+              type="number" 
+              id="age" 
+              name="age" 
+              placeholder="Enter your age"
+              min="1"
+              max="150"
+              required
+            >
+            <div class="field-error" id="ageError"></div>
+          </div>
+          
+          <!-- Gender Field -->
+          <div class="form-group">
+            <label>Gender <span class="required">*</span></label>
+            <div class="radio-group">
+              <label class="radio-label">
+                <input type="radio" name="gender" value="Male" required>
+                <span>Male</span>
+              </label>
+              <label class="radio-label">
+                <input type="radio" name="gender" value="Female" required>
+                <span>Female</span>
+              </label>
+              <label class="radio-label">
+                <input type="radio" name="gender" value="Other" required>
+                <span>Other</span>
+              </label>
+            </div>
+            <div class="field-error" id="genderError"></div>
+          </div>
+          
+          <!-- Lives in US Field -->
+          <div class="form-group">
+            <label class="checkbox-label">
+              <input type="checkbox" id="livesInUs" name="livesInUs" required>
+              <span>I live in the United States <span class="required">*</span></span>
+            </label>
+            <div class="field-error" id="livesInUsError"></div>
+          </div>
+          
+          <button type="submit" class="login-btn" id="submitBtn">
+            Continue
+          </button>
+        </form>
+        
+        <div class="login-error" id="profileError" style="display: none;"></div>
+      </div>
+    </div>
+  </div>
+
+  <script src="supabase-config.js"></script>
+  <script src="profile.js"></script>
+</body>
+</html>
+
+

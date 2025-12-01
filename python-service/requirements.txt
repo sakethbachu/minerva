@@ -16,6 +16,9 @@ pydantic==2.9.2
 # Environment variable management
 python-dotenv==1.0.0
 
+# Supabase client
+supabase>=2.0.0
+
 #
 # NOTE: E2B/Exa sandbox has been removed in favor of Tavily-only search.
 # Keeping the dependency commented for reference; can be deleted later if not needed.
